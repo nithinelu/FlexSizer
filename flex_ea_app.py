@@ -70,7 +70,7 @@ def to_number(text, kind=int):
 
 class App(ttk.Frame):
     def __init__(self, master):
-        super().__init__(master, padding=12)
+        super().__init__(master, padding=14, style="App.TFrame")
         self.settings = load_settings()
         self.qty_vars = {lic: tk.StringVar(value="0") for lic in LICENSE_TYPES}
         self.how_vars = {lic: tk.StringVar(value=TREATMENTS[self.settings["treatment"][lic]])
@@ -413,13 +413,59 @@ class App(ttk.Frame):
         os.startfile(path)
 
 
+C = {"bg": "#F3F6FA", "surface": "#FFFFFF", "ink": "#1E2A38", "muted": "#6B7785", "line": "#D6DDE6",
+     "accent": "#049FD9", "accent_dark": "#0379A6", "accent_soft": "#DDF2FB", "navy": "#0B2A4A"}
+F = "Segoe UI"
+
+
+def setup_style(root):
+    s = ttk.Style(root)
+    s.theme_use("clam")
+    root.configure(background=C["bg"])
+    s.configure(".", font=(F, 10), background=C["bg"], foreground=C["ink"])
+    s.configure("TLabelframe", background=C["surface"], bordercolor=C["line"], relief="solid", padding=12)
+    s.configure("TLabelframe.Label", background=C["bg"], foreground=C["navy"], font=(F, 11, "bold"))
+    for w in ("TFrame", "TLabel", "TRadiobutton"):
+        s.configure(w, background=C["surface"])
+    s.configure("App.TFrame", background=C["bg"])
+    s.configure("TNotebook", background=C["surface"], borderwidth=0)
+    s.configure("TNotebook.Tab", font=(F, 10, "bold"), padding=(14, 6), background=C["bg"], foreground=C["muted"])
+    s.map("TNotebook.Tab", background=[("selected", C["accent_soft"])], foreground=[("selected", C["navy"])])
+    s.configure("TButton", padding=(12, 6), background=C["surface"], bordercolor=C["line"])
+    s.map("TButton", background=[("active", C["accent_soft"])])
+    s.configure("Treeview", rowheight=26, fieldbackground=C["surface"], background=C["surface"], bordercolor=C["line"])
+    s.configure("Treeview.Heading", font=(F, 9, "bold"), background=C["bg"], foreground=C["muted"], relief="flat")
+    s.map("Treeview", background=[("selected", C["accent_soft"])], foreground=[("selected", C["ink"])])
+    for w in ("TEntry", "TSpinbox", "TCombobox"):
+        s.configure(w, fieldbackground=C["surface"], bordercolor=C["line"], padding=4)
+    s.map("TCombobox", fieldbackground=[("readonly", C["surface"])],
+          selectbackground=[("readonly", C["surface"])], selectforeground=[("readonly", C["ink"])])
+    root.option_add("*TCombobox*Listbox.font", (F, 10))
+
+
+def header(root):
+    bar = tk.Frame(root, background=C["navy"], padx=18, pady=12)
+    bar.pack(fill="x")
+    tk.Frame(root, background=C["accent"], height=3).pack(fill="x")
+    tk.Label(bar, text=APP_NAME, bg=C["navy"], fg="#FFFFFF", font=(F, 17, "bold")).pack(anchor="w")
+    tk.Label(bar, text="Collaboration Flex Plan 3.0  ·  Enterprise Agreement  ·  On-premises calling",
+             bg=C["navy"], fg="#9FC3E0", font=(F, 10)).pack(anchor="w")
+
+
 def main():
+    if os.name == "nt":
+        try:
+            import ctypes
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        except Exception:
+            pass
     root = tk.Tk()
     root.title(APP_NAME)
     icon = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.ico")
     if os.path.exists(icon):
         root.iconbitmap(icon)
-    ttk.Style().theme_use("vista" if os.name == "nt" else "clam")
+    setup_style(root)
+    header(root)
     App(root).pack(fill="both", expand=True)
     root.minsize(1060, 720)
     root.mainloop()
