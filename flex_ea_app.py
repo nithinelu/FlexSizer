@@ -1,4 +1,4 @@
-"""Cisco Flex EA Licence Calculator - Tkinter front end for flex_ea_calc.
+"""FlexSizer - Cisco Flex 3.0 EA licence sizing; Tkinter front end for flex_ea_calc.
 
 Copyright (c) 2026 Nithin Eluvathingal. MIT License - see LICENSE.
 """
@@ -13,9 +13,12 @@ from tkinter import filedialog, messagebox, ttk
 from flex_ea_calc import (DATA_SHEET_URL, DEFAULT_SETTINGS, LICENSE_TYPES, SKUS, TREATMENTS,
                           calculate, kw_scenarios, marginal_costs, summary_text, unit_prices)
 
-APP_NAME = "Cisco Flex EA Calculator"
-SETTINGS_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), APP_NAME)
+APP_NAME = "FlexSizer"
+APP_TAGLINE = "Cisco Collaboration Flex 3.0 EA sizing"
+_APPDATA = os.environ.get("APPDATA", os.path.expanduser("~"))
+SETTINGS_DIR = os.path.join(_APPDATA, APP_NAME)
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
+OLD_SETTINGS_FILE = os.path.join(_APPDATA, "Cisco Flex EA Calculator", "settings.json")  # before the rename
 SETTINGS_VERSION = 4   # v2: data sheet rules; v3: pricing, 20% growth; v4: Cisco user-type mapping. Older saves are ignored
 TREATMENT_BY_LABEL = {v: k for k, v in TREATMENTS.items()}
 RULE_FIELDS = [   # (settings key, label, number type)
@@ -33,8 +36,14 @@ PRICE_FIELDS = [
     ("discount_pct", "Discount off list (%)", float),
     ("term_months", "Term (months)", int),
 ]
-WHATIF_FIELDS = [("kw", "Extra knowledge workers"), ("ca", "Extra Common Area devices"),
-                 ("access", "Extra Access devices")]
+WHATIF_FIELDS = [("kw", "+ Knowledge workers"), ("ca", "+ Common Area"), ("access", "+ Access")]
+
+C = {"bg": "#F3F6FA", "surface": "#FFFFFF", "ink": "#1E2A38", "muted": "#6B7785", "line": "#D6DDE6",
+     "stripe": "#F7F9FC", "accent": "#049FD9", "accent_dark": "#0379A6", "accent_soft": "#DDF2FB",
+     "navy": "#0B2A4A", "free": "#3BB273", "orange": "#E07B39", "track": "#E9EEF4"}
+# One colour per Flex user type, used for the row dots, tiles and bars.
+TYPE_COLOR = {"KW": "#049FD9", "CA": "#14A38B", "ACCESS": "#7B5CD6", "FREE": "#A0AAB6"}
+F = "Segoe UI"
 
 
 def money(v):
@@ -43,8 +52,9 @@ def money(v):
 
 def load_settings():
     s = copy.deepcopy(DEFAULT_SETTINGS)
+    path = SETTINGS_FILE if os.path.exists(SETTINGS_FILE) else OLD_SETTINGS_FILE
     try:
-        with open(SETTINGS_FILE, encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             saved = json.load(f)
         if saved.get("version") == SETTINGS_VERSION:
             treatment = saved.pop("treatment", {})
@@ -68,9 +78,34 @@ def to_number(text, kind=int):
         return 0
 
 
+class Tile(tk.Frame):
+    """KPI card: coloured top stripe, big number, caption and a small detail line."""
+
+    def __init__(self, master, caption, color):
+        super().__init__(master, bg=C["surface"], highlightbackground=C["line"], highlightthickness=1)
+        tk.Frame(self, bg=color, height=4).pack(fill="x")
+        body = tk.Frame(self, bg=C["surface"], padx=12, pady=8)
+        body.pack(fill="both", expand=True)
+        self.value = tk.Label(body, text="0", bg=C["surface"], fg=color, font=(F, 18, "bold"), anchor="w")
+        self.value.pack(fill="x")
+        cap = tk.Label(body, text=caption, bg=C["surface"], fg=C["ink"], font=(F, 9, "bold"), anchor="w",
+                       justify="left")
+        cap.pack(fill="x")
+        self.detail = tk.Label(body, text="", bg=C["surface"], fg=C["muted"], font=(F, 8), anchor="w",
+                               justify="left")
+        self.detail.pack(fill="x")
+        for lbl in (cap, self.detail):   # wrap instead of clipping on narrow windows
+            lbl.bind("<Configure>", lambda e: e.widget.config(wraplength=e.width - 6))
+
+    def set(self, value, detail=""):
+        self.value.config(text=value)
+        self.detail.config(text=detail)
+
+
 class App(ttk.Frame):
     def __init__(self, master):
         super().__init__(master, padding=14, style="App.TFrame")
+        self.scale = master.winfo_fpixels("1i") / 96.0   # pixel sizes below are for 100% Windows scaling
         self.settings = load_settings()
         self.qty_vars = {lic: tk.StringVar(value="0") for lic in LICENSE_TYPES}
         self.how_vars = {lic: tk.StringVar(value=TREATMENTS[self.settings["treatment"][lic]])
@@ -86,117 +121,182 @@ class App(ttk.Frame):
             v.trace_add("write", lambda *_: self.recalc())
         self.recalc()
 
+    def px(self, n):
+        return int(n * self.scale)
+
     # ---------------------------------------------------------------- layout
     def _build(self):
         self.columnconfigure(1, weight=1)
-        bold = ("Segoe UI", 9, "bold")
+        self.rowconfigure(0, weight=1)
+        left = ttk.Frame(self, style="App.TFrame")
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
+        left.rowconfigure(1, weight=1)
+        right = ttk.Frame(self, style="App.TFrame")
+        right.grid(row=0, column=1, sticky="nsew")
+        right.columnconfigure(0, weight=1)
+        right.rowconfigure(3, weight=1)
+        self._build_inputs(left)
+        self._build_rules(left)
+        foot = ttk.Frame(left, style="App.TFrame")
+        foot.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        ttk.Label(foot, text="© 2026 Nithin Eluvathingal · MIT License", style="Foot.TLabel").pack(side="left")
+        link = ttk.Label(foot, text="Cisco Flex 3.0 data sheet ↗", style="FootLink.TLabel", cursor="hand2")
+        link.pack(side="right")
+        link.bind("<Button-1>", lambda _: webbrowser.open(DATA_SHEET_URL))
+        self._build_tiles(right)
+        self._build_charts(right)
+        self._build_tables(right)
 
-        inp = ttk.LabelFrame(self, text="Existing perpetual licences", padding=10)
-        inp.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
-        ttk.Label(inp, text="Licence type", font=bold).grid(row=0, column=0, sticky="w")
-        ttk.Label(inp, text="Quantity", font=bold).grid(row=0, column=1, sticky="w", padx=8)
-        ttk.Label(inp, text="Flex user type", font=bold).grid(row=0, column=2, sticky="w")
+    def _build_inputs(self, parent):
+        inp = ttk.LabelFrame(parent, text="1  Existing perpetual licences")
+        inp.grid(row=0, column=0, sticky="nsew")
+        for col, text in enumerate(("Licence type", "Quantity", "Flex user type")):
+            ttk.Label(inp, text=text, style="ColHead.TLabel").grid(row=0, column=col, sticky="w",
+                                                                   padx=(0 if col == 0 else 8, 0), pady=(0, 4))
+        self.dots = {}
         for i, lic in enumerate(LICENSE_TYPES, start=1):
-            ttk.Label(inp, text=lic).grid(row=i, column=0, sticky="w", pady=3)
-            e = ttk.Spinbox(inp, from_=0, to=1_000_000, width=10, textvariable=self.qty_vars[lic])
+            cell = ttk.Frame(inp)
+            cell.grid(row=i, column=0, sticky="w", pady=3)
+            self.dots[lic] = tk.Label(cell, text="●", bg=C["surface"], font=(F, 11))
+            self.dots[lic].pack(side="left", padx=(0, 6))
+            ttk.Label(cell, text=lic).pack(side="left")
+            e = ttk.Spinbox(inp, from_=0, to=1_000_000, width=9, textvariable=self.qty_vars[lic])
             e.grid(row=i, column=1, padx=8, pady=3)
             if i == 1:
                 self.first_entry = e
-            ttk.Combobox(inp, values=list(TREATMENTS.values()), state="readonly", width=34,
+            ttk.Combobox(inp, values=list(TREATMENTS.values()), state="readonly", width=33,
                          textvariable=self.how_vars[lic]).grid(row=i, column=2, pady=3)
         ttk.Button(inp, text="Clear quantities", command=self.clear).grid(
-            row=len(LICENSE_TYPES) + 1, column=0, columnspan=3, sticky="w", pady=(8, 0))
+            row=len(LICENSE_TYPES) + 1, column=0, columnspan=3, sticky="w", pady=(10, 0))
 
-        opt = ttk.LabelFrame(self, text="Flex 3.0 EA rules (from Cisco data sheet)", padding=10)
-        opt.grid(row=1, column=0, sticky="nsew", padx=(0, 10), pady=(10, 0))
+    def _build_rules(self, parent):
+        box = ttk.LabelFrame(parent, text="2  Rules & pricing")
+        box.grid(row=1, column=0, sticky="nsew", pady=(14, 0))
+        box.columnconfigure(0, weight=1)
+        box.rowconfigure(0, weight=1)
+        tabs = ttk.Notebook(box)
+        tabs.grid(row=0, column=0, sticky="nsew")
+
+        rules = ttk.Frame(tabs, padding=(4, 8))
         for i, (key, label, _) in enumerate(RULE_FIELDS):
-            ttk.Label(opt, text=label).grid(row=i, column=0, sticky="w", pady=2)
-            ttk.Entry(opt, width=10, textvariable=self.rule_vars[key]).grid(row=i, column=1, sticky="w", padx=8)
+            ttk.Label(rules, text=label).grid(row=i, column=0, sticky="w", pady=2)
+            ttk.Entry(rules, width=9, textvariable=self.rule_vars[key], justify="right").grid(
+                row=i, column=1, sticky="w", padx=8)
         row = len(RULE_FIELDS)
-        ttk.Label(opt, text="Devices above the included amount").grid(row=row, column=0, sticky="nw", pady=(6, 0))
-        rb = ttk.Frame(opt)
-        rb.grid(row=row, column=1, sticky="w", padx=8, pady=(6, 0))
-        ttk.Radiobutton(rb, text="Common Area / Access add-ons", value="addon",
-                        variable=self.excess_mode).pack(anchor="w")
-        ttk.Radiobutton(rb, text="Buy extra EA KW licences", value="ea",
-                        variable=self.excess_mode).pack(anchor="w")
-        btns = ttk.Frame(opt)
-        btns.grid(row=row + 1, column=0, columnspan=2, sticky="w", pady=(10, 0))
-        ttk.Button(btns, text="Save rules as default", command=self.save_defaults).pack(side="left")
-        ttk.Button(btns, text="Reset to data sheet", command=self.reset_rules).pack(side="left", padx=8)
-        link = ttk.Label(opt, text="Open Cisco Flex 3.0 data sheet", foreground="#1F5FA8", cursor="hand2")
-        link.grid(row=row + 2, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        link.bind("<Button-1>", lambda _: webbrowser.open(DATA_SHEET_URL))
-        ttk.Label(opt, text="© 2026 Nithin Eluvathingal · MIT License", foreground="#888").grid(
-            row=row + 3, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        ttk.Label(rules, text="Devices above the free allowance:").grid(
+            row=row, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        rb = ttk.Frame(rules)
+        rb.grid(row=row + 1, column=0, columnspan=2, sticky="w")
+        ttk.Radiobutton(rb, text="Add-on licences", value="addon", variable=self.excess_mode).pack(side="left")
+        ttk.Radiobutton(rb, text="Extra EA KW licences", value="ea",
+                        variable=self.excess_mode).pack(side="left", padx=(16, 0))
+        tabs.add(rules, text="EA rules")
 
-        price = ttk.LabelFrame(self, text="Pricing (per licence per month, USD list)", padding=10)
-        price.grid(row=2, column=0, sticky="nsew", padx=(0, 10), pady=(10, 0))
+        price = ttk.Frame(tabs, padding=(4, 8))
         for i, (key, label, _) in enumerate(PRICE_FIELDS):
             ttk.Label(price, text=label).grid(row=i, column=0, sticky="w", pady=2)
-            ttk.Entry(price, width=10, textvariable=self.rule_vars[key]).grid(row=i, column=1, sticky="w", padx=8)
+            ttk.Entry(price, width=9, textvariable=self.rule_vars[key], justify="right").grid(
+                row=i, column=1, sticky="w", padx=8)
+        ttk.Label(price, text="USD list price per licence per month (CCW).", style="Muted.TLabel").grid(
+            row=len(PRICE_FIELDS), column=0, columnspan=2, sticky="w", pady=(10, 0))
+        tabs.add(price, text="Pricing")
 
-        res = ttk.LabelFrame(self, text="Result", padding=10)
-        res.grid(row=0, column=1, rowspan=3, sticky="nsew")
-        self.rowconfigure(2, weight=1)
-        res.columnconfigure(0, weight=1)
-        res.rowconfigure(2, weight=1)
-        big = ttk.Frame(res)
-        big.grid(row=0, column=0, sticky="ew")
-        self.ea_label = ttk.Label(big, text="0", font=("Segoe UI", 28, "bold"), foreground="#1F5FA8")
-        self.ea_label.grid(row=0, column=0, sticky="w")
-        ttk.Label(big, text="Flex EA Knowledge Worker licences", font=("Segoe UI", 11)).grid(
-            row=0, column=1, sticky="w", padx=10)
-        self.addon_label = ttk.Label(big, text="", font=("Segoe UI", 11, "bold"), foreground="#B5401B")
-        self.addon_label.grid(row=1, column=0, columnspan=2, sticky="w")
-        self.note_label = ttk.Label(res, text="", foreground="#666", wraplength=420, justify="left")
-        self.note_label.grid(row=1, column=0, sticky="w", pady=(2, 8))
+        btns = ttk.Frame(box)
+        btns.grid(row=1, column=0, sticky="w", pady=(10, 0))
+        ttk.Button(btns, text="Save as default", command=self.save_defaults).pack(side="left")
+        ttk.Button(btns, text="Reset to data sheet", command=self.reset_rules).pack(side="left", padx=8)
 
-        tabs = ttk.Notebook(res)
-        tabs.grid(row=2, column=0, sticky="nsew")
+    def _build_tiles(self, parent):
+        row = ttk.Frame(parent, style="App.TFrame")
+        row.grid(row=0, column=0, sticky="ew")
+        specs = [("ea", "EA KW licences", TYPE_COLOR["KW"]),
+                 ("ca", "Common Area add-ons", TYPE_COLOR["CA"]),
+                 ("access", "Access add-ons", TYPE_COLOR["ACCESS"]),
+                 ("monthly", "Per month (USD)", C["navy"]),
+                 ("term", "Term total (USD)", C["orange"])]
+        self.tiles = {}
+        for i, (key, caption, color) in enumerate(specs):
+            row.columnconfigure(i, weight=1, uniform="tile")
+            self.tiles[key] = Tile(row, caption, color)
+            self.tiles[key].grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else 10, 0))
+        self.ea_label = self.tiles["ea"].value
+        self.note_label = tk.Label(parent, text="", bg=C["accent_soft"], fg=C["navy"], font=(F, 9),
+                                   anchor="w", justify="left", padx=12, pady=7)
+        self.note_label.grid(row=1, column=0, sticky="ew", pady=(12, 0))
+        self.note_label.bind("<Configure>", lambda e: self.note_label.config(wraplength=e.width - 24))
 
-        self.tree = ttk.Treeview(tabs, columns=("value",), show="tree", height=16)
-        self.tree.column("#0", width=320)
-        self.tree.column("value", width=120, anchor="e")
-        tabs.add(self.tree, text="Summary & cost")
+    def _build_charts(self, parent):
+        card = tk.Frame(parent, bg=C["surface"], highlightbackground=C["line"], highlightthickness=1)
+        card.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+        self.chart = tk.Canvas(card, height=self.px(150), bg=C["surface"], highlightthickness=0)
+        self.chart.pack(fill="x", padx=14, pady=10)
+        self.chart.bind("<Configure>", lambda e: self.draw_chart())
 
-        cols = ("kw", "ca", "access", "monthly", "term", "delta")
-        heads = ("EA KW", "CA add-on", "Access add-on", "Monthly", "Term total", "vs recommended")
-        sc = ttk.Frame(tabs, padding=6)
-        self.scen = ttk.Treeview(sc, columns=cols, show="tree headings", height=9)
-        self.scen.heading("#0", text="Option")
-        self.scen.column("#0", width=150)
-        for c, h in zip(cols, heads):
-            self.scen.heading(c, text=h)
-            self.scen.column(c, width=90, anchor="e")
-        self.scen.pack(fill="both", expand=True)
-        self.scen_note = ttk.Label(sc, text="", foreground="#666", wraplength=640, justify="left")
-        self.scen_note.pack(anchor="w", pady=(6, 0))
+    def _build_tables(self, parent):
+        tabs = ttk.Notebook(parent)
+        tabs.grid(row=3, column=0, sticky="nsew", pady=(12, 0))
+
+        summ = ttk.Frame(tabs, padding=8)
+        self.tree = self._table(summ, ("value",), ("",), (130,), first=("Item", 340), headings=False)
+        tabs.add(summ, text="Summary & cost")
+
+        sc = ttk.Frame(tabs, padding=8)
+        self.scen = self._table(sc, ("kw", "ca", "access", "monthly", "term", "delta"),
+                                ("EA KW", "CA add-on", "Access add-on", "Monthly", "Term total", "Extra cost"),
+                                (70, 85, 110, 100, 115, 100), first=("Option", 180))
+        self.scen_note = ttk.Label(sc, text="", style="Muted.TLabel", justify="left")
+        self.scen_note.pack(anchor="w", fill="x", pady=(8, 0))
+        self.scen_note.bind("<Configure>", lambda e: self.scen_note.config(wraplength=e.width))
         tabs.add(sc, text="More KW vs add-ons")
 
-        wi = ttk.Frame(tabs, padding=6)
+        wi = ttk.Frame(tabs, padding=8)
+        inputs = ttk.Frame(wi)
+        inputs.pack(fill="x")
         for i, (key, label) in enumerate(WHATIF_FIELDS):
-            ttk.Label(wi, text=label).grid(row=i, column=0, sticky="w", pady=2)
-            ttk.Spinbox(wi, from_=0, to=1_000_000, width=10, textvariable=self.whatif_vars[key]).grid(
-                row=i, column=1, sticky="w", padx=8)
-        cols = ("now", "after", "delta")
-        self.whatif = ttk.Treeview(wi, columns=cols, show="tree headings", height=8)
-        self.whatif.heading("#0", text="")
-        self.whatif.column("#0", width=200)
-        for c, h in zip(cols, ("Current", "After change", "Difference")):
-            self.whatif.heading(c, text=h)
-            self.whatif.column(c, width=110, anchor="e")
-        self.whatif.grid(row=3, column=0, columnspan=3, sticky="nsew", pady=(8, 0))
-        self.unit_note = ttk.Label(wi, text="", foreground="#666", wraplength=640, justify="left")
-        self.unit_note.grid(row=4, column=0, columnspan=3, sticky="w", pady=(6, 0))
-        wi.columnconfigure(2, weight=1)
-        wi.rowconfigure(3, weight=1)
+            ttk.Label(inputs, text=label).grid(row=0, column=i * 2, sticky="w", padx=(0 if i == 0 else 16, 6))
+            ttk.Spinbox(inputs, from_=0, to=1_000_000, width=8, textvariable=self.whatif_vars[key]).grid(
+                row=0, column=i * 2 + 1, sticky="w")
+        self.whatif = self._table(wi, ("now", "after", "delta"), ("Current", "After change", "Difference"),
+                                  (130, 130, 130), first=("", 220), pady=(10, 0))
+        self.unit_note = ttk.Label(wi, text="", style="Muted.TLabel", justify="left")
+        self.unit_note.pack(anchor="w", fill="x", pady=(8, 0))
+        self.unit_note.bind("<Configure>", lambda e: self.unit_note.config(wraplength=e.width))
         tabs.add(wi, text="What-if: add devices")
 
-        out = ttk.Frame(res)
-        out.grid(row=3, column=0, sticky="w", pady=(10, 0))
-        ttk.Button(out, text="Copy summary", command=self.copy_summary).pack(side="left")
-        ttk.Button(out, text="Export to Excel…", command=self.export_excel).pack(side="left", padx=8)
+    def _table(self, parent, cols, heads, widths, first, headings=True, pady=0):
+        box = ttk.Frame(parent)
+        box.pack(fill="both", expand=True, pady=pady)
+        tree = ttk.Treeview(box, columns=cols, show="tree headings" if headings else "tree", height=9)
+        tree.heading("#0", text=first[0])
+        for c, h in zip(cols, heads):
+            tree.heading(c, text=h)
+            tree.column(c, anchor="e", stretch=False)
+        # Widths are proportions: share the table's actual width so no column is clipped.
+        shares = list(zip(("#0",) + tuple(cols), (first[1],) + tuple(widths)))
+        total = sum(w for _, w in shares)
+
+        def fit(event):
+            for c, w in shares:
+                tree.column(c, width=max(self.px(40), int(event.width * w / total)))
+        tree.bind("<Configure>", fit)
+        tree.tag_configure("odd", background=C["stripe"])
+        tree.tag_configure("key", font=(F, 10, "bold"), foreground=C["navy"])
+        tree.tag_configure("section", font=(F, 10, "bold"))
+        tree.tag_configure("up", foreground=C["orange"])
+        bar = ttk.Scrollbar(box, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=bar.set)
+        tree.pack(side="left", fill="both", expand=True)
+        bar.pack(side="right", fill="y")
+        return tree
+
+    def _rows(self, tree, rows, parent=""):
+        """Insert (text, values, extra tags) rows with zebra striping."""
+        start = len(tree.get_children(parent))
+        ids = []
+        for i, (text, values, tags) in enumerate(rows, start=start):
+            ids.append(tree.insert(parent, "end", text=text, values=values,
+                                   tags=(("odd",) if i % 2 else ()) + tuple(tags), open=True))
+        return ids
 
     # ---------------------------------------------------------------- logic
     def current_settings(self):
@@ -248,14 +348,17 @@ class App(ttk.Frame):
         quantities = self.quantities()
         s = self.current_settings()
         r = self.result = calculate(quantities, s)
+        term = max(1, s["term_months"])
 
-        self.ea_label.config(text=f"{r.ea_licenses:,}")
-        addons = []
-        if r.ca_addon:
-            addons.append(f"{r.ca_addon:,} Common Area add-on")
-        if r.access_addon:
-            addons.append(f"{r.access_addon:,} Access add-on")
-        self.addon_label.config(text=("+ " + "  + ".join(addons) + " licences") if addons else "")
+        for lic in LICENSE_TYPES:
+            self.dots[lic].config(fg=TYPE_COLOR[s["treatment"][lic]])
+        self.tiles["ea"].set(f"{r.ea_licenses:,}", f"{r.knowledge_workers:,} knowledge workers"
+                             + (" · EA minimum" if r.min_applied else ""))
+        self.tiles["ca"].set(f"{r.ca_addon:,}", f"{r.ca_included:,} included free")
+        self.tiles["access"].set(f"{r.access_addon:,}", f"{r.access_included:,} included free")
+        self.tiles["monthly"].set(f"{r.monthly:,.0f}", f"{r.monthly * 12:,.0f} per year")
+        self.tiles["term"].set(f"{r.term_total:,.0f}", f"{term} months"
+                               + (f" · {s['discount_pct']:g}% off list" if s["discount_pct"] else " · list price"))
 
         notes = []
         if r.min_applied:
@@ -265,30 +368,87 @@ class App(ttk.Frame):
             notes.append(f"Includes {r.spare_kw:,} extra KW licences for devices above the included allowance.")
         notes.append(f"You can grow to {r.growth_ceiling:,} KWs inside the "
                      f"{s['growth_allowance_pct']:g}% growth allowance.")
-        self.note_label.config(text=" ".join(notes))
+        self.note_label.config(text="ⓘ  " + " ".join(notes))
 
         self.tree.delete(*self.tree.get_children())
-        for label, value in self.result_rows(r, s):
-            self.tree.insert("", "end", text=label, values=(f"{value:,}",))
-        cost = self.tree.insert("", "end", text=f"Cost (USD, {s['discount_pct']:g}% discount)", open=True)
-        for label, value in self.cost_rows(r, s):
-            self.tree.insert(cost, "end", text=label, values=(money(value),))
+        key_rows = {"Flex EA Knowledge Worker licences", "   Common Area add-on licences", "   Access add-on licences"}
+        self._rows(self.tree, [(label, (f"{value:,}",), ("key",) if label in key_rows else ())
+                               for label, value in self.result_rows(r, s)])
+        (cost,) = self._rows(self.tree, [(f"Cost (USD, {s['discount_pct']:g}% discount)", ("",), ("section",))])
+        self._rows(self.tree, [(label, (money(value),), ("key",) if label.startswith("Total for") else ())
+                               for label, value in self.cost_rows(r, s)], cost)
         if s["headroom_pct"]:
-            parent = self.tree.insert("", "end", text=f"Quantities after {s['headroom_pct']:g}% head-room",
-                                      open=True)
-            for lic, qty, sized, _ in r.lines:
-                self.tree.insert(parent, "end", text=f"{lic} ({qty:,})", values=(f"{sized:,}",))
+            (parent,) = self._rows(self.tree, [(f"Quantities after {s['headroom_pct']:g}% head-room", ("",),
+                                                ("section",))])
+            self._rows(self.tree, [(f"{lic} ({qty:,})", (f"{sized:,}",), ()) for lic, qty, sized, _ in r.lines],
+                       parent)
         self.fill_scenarios(quantities, s)
         self.fill_whatif(s)
+        self.draw_chart()
+
+    def draw_chart(self):
+        r, cv = self.result, self.chart
+        if r is None:
+            return
+        cv.delete("all")
+        w = max(cv.winfo_width(), self.px(300))
+        bar_h, gap = self.px(16), self.px(8)
+        title = (F, 9, "bold")
+        small = (F, 8)
+
+        # Monthly cost split by SKU.
+        cv.create_text(0, 0, text="Monthly cost split", anchor="nw", font=title, fill=C["ink"])
+        y = self.px(20)
+        parts = [("EA KW", r.cost_kw, TYPE_COLOR["KW"]), ("Common Area", r.cost_ca, TYPE_COLOR["CA"]),
+                 ("Access", r.cost_access, TYPE_COLOR["ACCESS"])]
+        total = sum(p[1] for p in parts)
+        cv.create_rectangle(0, y, w, y + bar_h, fill=C["track"], width=0)
+        x = 0
+        for _, value, color in parts:
+            if total and value:
+                seg = w * value / total
+                cv.create_rectangle(x, y, x + seg, y + bar_h, fill=color, width=0)
+                x += seg
+        lx, ly = 0, y + bar_h + gap
+        for name, value, color in parts:
+            share = f"{value / total:.0%}" if total else "0%"
+            cv.create_rectangle(lx, ly + 2, lx + self.px(10), ly + self.px(12), fill=color, width=0)
+            t = cv.create_text(lx + self.px(14), ly, anchor="nw", font=small, fill=C["muted"],
+                               text=f"{name}  {money(value)}  ({share})")
+            lx = cv.bbox(t)[2] + self.px(18)
+
+        # Free allowance use: green = covered free, colour = add-on (or spare KW), grey = unused.
+        y = ly + self.px(28)
+        cv.create_text(0, y, text="Free allowance use", anchor="nw", font=title, fill=C["ink"])
+        label_w = self.px(110)
+        for name, devices, included, addon, color in (
+                ("Common Area", r.ca_devices, r.ca_included, r.ca_addon, TYPE_COLOR["CA"]),
+                ("Access", r.access_devices, r.access_included, r.access_addon, TYPE_COLOR["ACCESS"])):
+            y += bar_h + gap
+            cv.create_text(0, y + bar_h / 2, text=name, anchor="w", font=small, fill=C["ink"])
+            x0, x1 = label_w, w - self.px(230)
+            span = max(devices, included, 1)
+            cv.create_rectangle(x0, y, x1, y + bar_h, fill=C["track"], width=0)
+            free = min(devices, included)
+            fx = x0 + (x1 - x0) * free / span
+            cv.create_rectangle(x0, y, fx, y + bar_h, fill=C["free"], width=0)
+            cv.create_rectangle(fx, y, x0 + (x1 - x0) * devices / span, y + bar_h, fill=color, width=0)
+            other = devices - free - addon   # covered by spare EA licences
+            cv.create_text(x1 + self.px(10), y + bar_h / 2, anchor="w", font=small, fill=C["muted"],
+                           text=f"{free:,} free · {addon:,} add-on"
+                                + (f" · {other:,} on spare KW" if other > 0 else "")
+                                + (f" · {included - devices:,} unused" if included > devices else ""))
 
     def fill_scenarios(self, quantities, s):
         self.scen.delete(*self.scen.get_children())
         options = kw_scenarios(quantities, s)
         base = options[0][1].term_total
-        for label, o in options:
-            self.scen.insert("", "end", text=label, values=(
-                f"{o.ea_licenses:,}", f"{o.ca_addon:,}", f"{o.access_addon:,}", money(o.monthly),
-                money(o.term_total), ("+" if o.term_total > base else "") + money(o.term_total - base)))
+        self._rows(self.scen, [(
+            label,
+            (f"{o.ea_licenses:,}", f"{o.ca_addon:,}", f"{o.access_addon:,}", money(o.monthly),
+             money(o.term_total), ("+" if o.term_total > base else "") + money(o.term_total - base)),
+            ("key",) if i == 0 else ("up",) if o.term_total > base else ())
+            for i, (label, o) in enumerate(options)])
         m = marginal_costs(s)
         self.scen_note.config(text=(
             f"Each extra EA KW costs {money(m['kw'])}/month but only frees {s['ca_pct']:g}% of a Common Area "
@@ -311,11 +471,13 @@ class App(ttk.Frame):
             (f"{term}-month term cost", now.term_total, after.term_total, True),
         ]
         self.whatif.delete(*self.whatif.get_children())
+        out = []
         for label, a, b, is_money in rows:
             fmt = money if is_money else (lambda v: f"{v:,}")
             d = b - a
-            self.whatif.insert("", "end", text=label,
-                               values=(fmt(a), fmt(b), ("+" if d > 0 else "") + fmt(d)))
+            out.append((label, (fmt(a), fmt(b), ("+" if d > 0 else "") + fmt(d)),
+                        (("key",) if label.endswith("term cost") else ()) + (("up",) if d > 0 else ())))
+        self._rows(self.whatif, out)
         p_kw, p_ca, p_ac = unit_prices(s)
         self.unit_note.config(text=(
             f"Once the included allowance is used up, each extra Common Area device costs {money(p_ca)}/month "
@@ -353,7 +515,7 @@ class App(ttk.Frame):
         except ImportError:
             messagebox.showerror(APP_NAME, "openpyxl is not installed (py -m pip install openpyxl).")
             return
-        path = filedialog.asksaveasfilename(defaultextension=".xlsx", initialfile="Flex EA sizing.xlsx",
+        path = filedialog.asksaveasfilename(defaultextension=".xlsx", initialfile="FlexSizer - Flex EA sizing.xlsx",
                                             filetypes=[("Excel workbook", "*.xlsx")])
         if not path:
             return
@@ -413,26 +575,37 @@ class App(ttk.Frame):
         os.startfile(path)
 
 
-C = {"bg": "#F3F6FA", "surface": "#FFFFFF", "ink": "#1E2A38", "muted": "#6B7785", "line": "#D6DDE6",
-     "accent": "#049FD9", "accent_dark": "#0379A6", "accent_soft": "#DDF2FB", "navy": "#0B2A4A"}
-F = "Segoe UI"
-
-
 def setup_style(root):
     s = ttk.Style(root)
     s.theme_use("clam")
     root.configure(background=C["bg"])
     s.configure(".", font=(F, 10), background=C["bg"], foreground=C["ink"])
-    s.configure("TLabelframe", background=C["surface"], bordercolor=C["line"], relief="solid", padding=12)
-    s.configure("TLabelframe.Label", background=C["bg"], foreground=C["navy"], font=(F, 11, "bold"))
+    # Panels are plain white cards: no inner border, title sits on the card.
+    s.configure("TLabelframe", background=C["surface"], borderwidth=0, relief="flat", padding=(16, 6, 16, 14))
+    s.configure("TLabelframe.Label", background=C["surface"], foreground=C["navy"], font=(F, 11, "bold"))
     for w in ("TFrame", "TLabel", "TRadiobutton"):
         s.configure(w, background=C["surface"])
+    s.map("TRadiobutton", background=[("active", C["surface"])])
     s.configure("App.TFrame", background=C["bg"])
-    s.configure("TNotebook", background=C["surface"], borderwidth=0)
-    s.configure("TNotebook.Tab", font=(F, 10, "bold"), padding=(14, 6), background=C["bg"], foreground=C["muted"])
+    s.configure("ColHead.TLabel", foreground=C["muted"], font=(F, 9, "bold"))
+    s.configure("Muted.TLabel", foreground=C["muted"], font=(F, 9))
+    s.configure("Link.TLabel", foreground=C["accent_dark"], font=(F, 9, "underline"))
+    s.configure("Foot.TLabel", background=C["bg"], foreground=C["muted"], font=(F, 8))
+    s.configure("FootLink.TLabel", background=C["bg"], foreground=C["accent_dark"], font=(F, 8, "underline"))
+    s.configure("Vertical.TScrollbar", background=C["bg"], troughcolor=C["surface"], bordercolor=C["surface"],
+                arrowcolor=C["muted"], gripcount=0)
+    s.configure("TNotebook", background=C["surface"], borderwidth=0, tabmargins=(0, 0, 0, 0))
+    s.configure("TNotebook.Tab", font=(F, 10, "bold"), padding=(14, 6), background=C["bg"],
+                foreground=C["muted"], bordercolor=C["line"])
     s.map("TNotebook.Tab", background=[("selected", C["accent_soft"])], foreground=[("selected", C["navy"])])
     s.configure("TButton", padding=(12, 6), background=C["surface"], bordercolor=C["line"])
     s.map("TButton", background=[("active", C["accent_soft"])])
+    s.configure("Accent.TButton", background=C["accent"], foreground="#FFFFFF", bordercolor=C["accent"],
+                font=(F, 10, "bold"))
+    s.map("Accent.TButton", background=[("active", C["accent_dark"])])
+    s.configure("Ghost.TButton", background=C["navy"], foreground="#FFFFFF", bordercolor="#3D5F82",
+                font=(F, 10, "bold"))
+    s.map("Ghost.TButton", background=[("active", "#173E66")])
     s.configure("Treeview", rowheight=26, fieldbackground=C["surface"], background=C["surface"], bordercolor=C["line"])
     s.configure("Treeview.Heading", font=(F, 9, "bold"), background=C["bg"], foreground=C["muted"], relief="flat")
     s.map("Treeview", background=[("selected", C["accent_soft"])], foreground=[("selected", C["ink"])])
@@ -443,13 +616,17 @@ def setup_style(root):
     root.option_add("*TCombobox*Listbox.font", (F, 10))
 
 
-def header(root):
+def header(root, app):
     bar = tk.Frame(root, background=C["navy"], padx=18, pady=12)
     bar.pack(fill="x")
     tk.Frame(root, background=C["accent"], height=3).pack(fill="x")
-    tk.Label(bar, text=APP_NAME, bg=C["navy"], fg="#FFFFFF", font=(F, 17, "bold")).pack(anchor="w")
-    tk.Label(bar, text="Collaboration Flex Plan 3.0  ·  Enterprise Agreement  ·  On-premises calling",
+    text = tk.Frame(bar, background=C["navy"])
+    text.pack(side="left")
+    tk.Label(text, text=APP_NAME, bg=C["navy"], fg="#FFFFFF", font=(F, 17, "bold")).pack(anchor="w")
+    tk.Label(text, text="Cisco Collaboration Flex Plan 3.0  ·  Enterprise Agreement  ·  On-premises calling",
              bg=C["navy"], fg="#9FC3E0", font=(F, 10)).pack(anchor="w")
+    ttk.Button(bar, text="Export to Excel", style="Accent.TButton", command=app.export_excel).pack(side="right")
+    ttk.Button(bar, text="Copy summary", style="Ghost.TButton", command=app.copy_summary).pack(side="right", padx=8)
 
 
 def main():
@@ -460,14 +637,16 @@ def main():
         except Exception:
             pass
     root = tk.Tk()
-    root.title(APP_NAME)
+    root.title(f"{APP_NAME} — {APP_TAGLINE}")
     icon = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.ico")
     if os.path.exists(icon):
         root.iconbitmap(icon)
     setup_style(root)
-    header(root)
-    App(root).pack(fill="both", expand=True)
-    root.minsize(1060, 720)
+    app = App(root)
+    header(root, app)
+    app.pack(fill="both", expand=True)
+    scale = app.scale
+    root.minsize(int(1180 * scale), int(780 * scale))
     root.mainloop()
 
 

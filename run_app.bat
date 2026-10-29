@@ -1,5 +1,5 @@
 @echo off
-rem Launch Cisco Flex EA Calculator (no console window).
+rem Launch FlexSizer (no console window).
 rem Uses the REAL Python directly, because the bare "pythonw" on PATH is the
 rem Microsoft Store stub ("Python was not found") which shadows the real one.
 cd /d "%~dp0"

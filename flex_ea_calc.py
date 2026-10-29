@@ -197,7 +197,7 @@ def marginal_costs(settings):
 
 def summary_text(r, settings):
     s = {**DEFAULT_SETTINGS, **settings}
-    out = ["Cisco Flex 3.0 EA licence sizing (on-premises calling)", ""]
+    out = ["FlexSizer - Cisco Flex 3.0 EA licence sizing (on-premises calling)", ""]
     out.append(f"{'Licence type':<19}{'Qty':>7}{'Sized':>8}  Flex user type")
     for lic, qty, sized, how in r.lines:
         out.append(f"{lic:<19}{qty:>7}{sized:>8}  {TREATMENTS.get(how, how)}")
