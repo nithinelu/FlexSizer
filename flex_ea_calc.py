@@ -45,7 +45,8 @@ DEFAULT_SETTINGS = {
     "growth_allowance_pct": 20.0,   # included growth allowance (information only)
     "premises_reg_pct": 20.0,       # premises device registration included (information only)
     "headroom_pct": 0.0,     # planning head-room added to every quantity before sizing
-    "excess_mode": "addon",  # "addon" = Common Area/Access add-ons, "ea" = buy extra KWs instead
+    "excess_mode": "addon",  # how many EA licences to buy - see EA_MODES
+    "ea_manual": 0,          # EA quantity when excess_mode is "manual"
     # Monthly list prices per licence (CCW, Oct 2026) and subscription term
     "price_kw": 11.75,       # A-FLEX-EAPL      EntW On-Premises Calling
     "price_ca": 5.75,        # A-FLEX-PL-COMMON On-Premises Common Area Add-on
@@ -58,6 +59,13 @@ DEFAULT_SETTINGS = {
     "price_nu_enh": 7.25,    # A-FLEX-NUPL-E NU On-Premises Calling Enhanced
     "price_nu_access": 3.95,  # A-FLEX-NUPL-A NU On-Premises Calling Access
     "nu_discount_pct": 0.0,
+}
+
+EA_MODES = {
+    "addon": "Cheapest: KWs + add-ons for the rest",
+    "match": "Match free allowance: no add-ons",
+    "ea": "Fewest EA licences with no add-ons",
+    "manual": "Manual EA quantity",
 }
 
 SKUS = {"kw": "A-FLEX-EAPL", "ca": "A-FLEX-PL-COMMON", "access": "A-FLEX-PL-ACCESS",
@@ -82,6 +90,7 @@ class Result:
     growth_ceiling: int = 0        # KW count reachable inside the growth allowance
     premises_reg: int = 0          # included premises device registrations
     min_applied: bool = False
+    manual_raised: bool = False    # manual EA quantity was below the KW count / EA minimum
     lines: list = field(default_factory=list)   # (type, qty, sized qty, treatment)
     cost_kw: float = 0.0           # monthly, after discount
     cost_ca: float = 0.0
@@ -135,7 +144,19 @@ def calculate(quantities, settings):
 
     kw, ca, ac = r.knowledge_workers, r.ca_devices, r.access_devices
     n = max(kw, min_ea, int(s.get("ea_override") or 0))
-    if s["excess_mode"] == "ea":
+    mode = s["excess_mode"]
+    if mode == "manual":
+        want = max(0, int(s["ea_manual"] or 0))
+        r.manual_raised = 0 < want < n
+        n = max(n, want)
+    elif mode == "match":
+        # Enough EA licences that the free 50% / 20% alone covers every Common Area and Access device.
+        for devices, pct in ((ca, ca_pct), (ac, access_pct)):
+            if devices and pct:
+                n = max(n, math.ceil(devices * 100.0 / pct - 1e-9))
+                while _pct_of(n, pct) < devices:
+                    n += 1
+    elif mode == "ea":
         # Smallest n where every device is covered by KWs + included allowances.
         # Uncovered devices fall as n rises, so "covered(n)" is monotone: binary search.
         def covered(m):
@@ -194,9 +215,11 @@ def kw_scenarios(quantities, settings, extra_steps=(0, 10, 25, 50, 100, 250, 500
             seen.add(n)
             out.append(("Recommended" if step == 0 else f"+{step} KW",
                         calculate(quantities, {**s, "ea_override": n})))
-    full = calculate(quantities, {**s, "excess_mode": "ea"})
-    if full.ea_licenses not in seen:
-        out.append(("KW covers all devices", calculate(quantities, {**s, "ea_override": full.ea_licenses})))
+    for mode, label in (("ea", "Fewest KW, no add-ons"), ("match", "Match free allowance")):
+        n = calculate(quantities, {**s, "excess_mode": mode}).ea_licenses
+        if n not in seen:
+            seen.add(n)
+            out.append((label, calculate(quantities, {**s, "ea_override": n})))
     return out
 
 
@@ -364,6 +387,8 @@ def summary_text(r, settings):
         "",
         f"Rules: Common Area {s['ca_pct']:g}% of KW, Access {s['access_pct']:g}% of KW, "
         f"minimum {s['min_ea']} KW, planning head-room {s['headroom_pct']:g}%",
+        f"EA quantity: {EA_MODES.get(s['excess_mode'], s['excess_mode'])}"
+        + (f" ({s['ea_manual']})" if s["excess_mode"] == "manual" else ""),
         "",
         f"Professional (Knowledge Worker):  {r.knowledge_workers}",
         f"Enhanced (Task Worker/Common Area): {r.ca_devices}  (included {r.ca_included}, unused {r.ca_unused})",

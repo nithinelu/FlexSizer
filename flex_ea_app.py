@@ -10,7 +10,7 @@ import tkinter as tk
 import webbrowser
 from tkinter import filedialog, messagebox, ttk
 
-from flex_ea_calc import (CTI, DATA_SHEET_URL, DEFAULT_SETTINGS, DEVICE_USE, LICENSE_TYPES, NU_TIER,
+from flex_ea_calc import (CTI, DATA_SHEET_URL, DEFAULT_SETTINGS, DEVICE_USE, EA_MODES, LICENSE_TYPES, NU_TIER,
                           PHONE_MODELS, ROOM, SKUS, TREATMENTS, calculate, calculate_nu, compare, kw_scenarios,
                           licence_for_model, marginal_costs, suggest_licences, summary_text, unit_prices)
 
@@ -259,14 +259,21 @@ class App(ttk.Frame):
                          for lic in LICENSE_TYPES}
         self.rule_vars = {key: tk.StringVar(value=f"{self.settings[key]:g}")
                           for key, _, _ in RULE_FIELDS + PRICE_FIELDS}
-        self.excess_mode = tk.StringVar(value=self.settings["excess_mode"])
+        mode = self.settings["excess_mode"] if self.settings["excess_mode"] in EA_MODES else "addon"
+        self.excess_mode = tk.StringVar(value=mode)                 # EA_MODES key
+        self.ea_mode_label = tk.StringVar(value=EA_MODES[mode])     # what the combobox shows
+        self.ea_manual = tk.StringVar(value=str(self.settings["ea_manual"]))
+        self.ea_mode_label.trace_add("write", lambda *_: self.excess_mode.set(
+            next(k for k, v in EA_MODES.items() if v == self.ea_mode_label.get())))
+        self.excess_mode.trace_add("write", lambda *_: self.ea_mode_label.get() != EA_MODES[self.excess_mode.get()]
+                                   and self.ea_mode_label.set(EA_MODES[self.excess_mode.get()]))
         self.whatif_vars = {key: tk.StringVar(value="0") for key, _ in WHATIF_FIELDS}
         self.phone_rows = []          # (model, qty, person uses, licence override) from the phone dialog
         self.phone_cti_enh = False
         self.result = None
         self._build()
         for v in [*self.qty_vars.values(), *self.how_vars.values(), *self.rule_vars.values(),
-                  *self.whatif_vars.values(), self.excess_mode]:
+                  *self.whatif_vars.values(), self.excess_mode, self.ea_manual]:
             v.trace_add("write", lambda *_: self.recalc())
         self.recalc()
 
@@ -335,13 +342,13 @@ class App(ttk.Frame):
             ttk.Entry(rules, width=9, textvariable=self.rule_vars[key], justify="right").grid(
                 row=i, column=1, sticky="w", padx=8)
         row = len(RULE_FIELDS)
-        ttk.Label(rules, text="Devices above the free allowance:").grid(
-            row=row, column=0, columnspan=2, sticky="w", pady=(8, 0))
-        rb = ttk.Frame(rules)
-        rb.grid(row=row + 1, column=0, columnspan=2, sticky="w")
-        ttk.Radiobutton(rb, text="Add-on licences", value="addon", variable=self.excess_mode).pack(side="left")
-        ttk.Radiobutton(rb, text="Extra EA KW licences", value="ea",
-                        variable=self.excess_mode).pack(side="left", padx=(16, 0))
+        ttk.Label(rules, text="EA licence quantity").grid(row=row, column=0, columnspan=2, sticky="w", pady=(8, 2))
+        mode_row = ttk.Frame(rules)
+        mode_row.grid(row=row + 1, column=0, columnspan=2, sticky="w")
+        ttk.Combobox(mode_row, textvariable=self.ea_mode_label, values=list(EA_MODES.values()),
+                     state="readonly", width=36).pack(side="left")
+        self.manual_entry = ttk.Entry(mode_row, width=8, textvariable=self.ea_manual, justify="right")
+        self.manual_entry.pack(side="left", padx=(8, 0))
         tabs.add(rules, text="EA rules")
 
         # USD list price per licence per month (CCW), EA and Named User side by side.
@@ -482,6 +489,7 @@ class App(ttk.Frame):
         s = {key: to_number(self.rule_vars[key].get(), kind) for key, _, kind in RULE_FIELDS + PRICE_FIELDS}
         s["treatment"] = {lic: TREATMENT_BY_LABEL[self.how_vars[lic].get()] for lic in LICENSE_TYPES}
         s["excess_mode"] = self.excess_mode.get()
+        s["ea_manual"] = to_number(self.ea_manual.get())
         return s
 
     def result_rows(self, r, s):
@@ -539,12 +547,26 @@ class App(ttk.Frame):
         self.tiles["term"].set(f"{r.term_total:,.0f}", f"{term} months"
                                + (f" · {s['discount_pct']:g}% off list" if s["discount_pct"] else " · list price"))
 
+        mode = s["excess_mode"]
+        self.manual_entry.config(state="normal" if mode == "manual" else "disabled")
         notes = []
-        if r.min_applied:
+        if r.manual_raised:
+            notes.append(f"Manual quantity raised to {r.ea_licenses:,}: the EA must cover all "
+                         f"{r.knowledge_workers:,} knowledge workers and the {s['min_ea']:,} minimum.")
+        elif mode == "match":
+            notes.append(f"{r.ea_licenses:,} EA licences make the free allowance cover every device "
+                         f"({r.ca_included:,} Common Area, {r.access_included:,} Access).")
+        elif r.min_applied:
             notes.append(f"Raised to the EA minimum of {s['min_ea']:,} KWs "
                          f"({r.spare_kw:,} spare also cover devices above the allowance).")
         elif r.spare_kw:
             notes.append(f"Includes {r.spare_kw:,} extra KW licences for devices above the included allowance.")
+        if mode != "addon":
+            cheapest = calculate(quantities, {**s, "excess_mode": "addon"})
+            extra = r.term_total - cheapest.term_total
+            if abs(extra) >= 0.005:
+                notes.append(f"Costs {money(abs(extra))} {'more' if extra > 0 else 'less'} over {term} months than "
+                             f"the cheapest option ({cheapest.ea_licenses:,} EA + add-ons).")
         notes.append(f"You can grow to {r.growth_ceiling:,} KWs inside the "
                      f"{s['growth_allowance_pct']:g}% growth allowance.")
         self.note_label.config(text="ⓘ  " + " ".join(notes))
@@ -752,6 +774,7 @@ class App(ttk.Frame):
         for key, _, _ in RULE_FIELDS + PRICE_FIELDS:
             self.rule_vars[key].set(f"{d[key]:g}")
         self.excess_mode.set(d["excess_mode"])
+        self.ea_manual.set(str(d["ea_manual"]))
 
     def copy_summary(self):
         self.clipboard_clear()
@@ -783,8 +806,8 @@ class App(ttk.Frame):
         ws.append([])
         for key, label, _ in RULE_FIELDS + PRICE_FIELDS:
             ws.append([label, s[key]])
-        ws.append(["Devices above included amount",
-                   "Common Area / Access add-ons" if s["excess_mode"] == "addon" else "Extra EA KW licences"])
+        ws.append(["EA licence quantity", EA_MODES[s["excess_mode"]]
+                   + (f" ({s['ea_manual']:,})" if s["excess_mode"] == "manual" else "")])
         ws.append([])
         for label, value in self.result_rows(r, s):
             ws.append([label.strip(), value])
