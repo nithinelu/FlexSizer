@@ -532,6 +532,7 @@ class App(ttk.Frame):
         return [
             ("Professional (Knowledge Workers)", r.knowledge_workers),
             ("Flex EA Knowledge Worker licences", r.ea_licenses),
+        ] + ([("   Knowledge workers outside the EA (NU Professional)", r.kw_outside)] if r.kw_outside else []) + [
             ("Enhanced (Task Worker / Common Area)", r.ca_devices),
             (f"   Included ({s['ca_pct']:g}% of {r.ea_licenses:,})", r.ca_included),
             ("   Common Area add-on licences", r.ca_addon),
@@ -551,6 +552,7 @@ class App(ttk.Frame):
             (f"{SKUS['kw']} monthly", r.cost_kw),
             (f"{SKUS['ca']} monthly", r.cost_ca),
             (f"{SKUS['access']} monthly", r.cost_access),
+        ] + ([(f"{SKUS['nu_pro']} (KWs outside EA) monthly", r.cost_kw_outside)] if r.kw_outside else []) + [
             ("Total per month", r.monthly),
             ("Total per year", r.monthly * 12),
             (f"Total for {term}-month term", r.term_total),
@@ -576,7 +578,8 @@ class App(ttk.Frame):
         for lic in LICENSE_TYPES:
             self.dots[lic].config(fg=TYPE_COLOR[s["treatment"][lic]])
         self.tiles["ea"].set(f"{r.ea_licenses:,}", f"{r.knowledge_workers:,} knowledge workers"
-                             + (" · EA minimum" if r.min_applied else ""))
+                             + (" · EA minimum" if r.min_applied else "")
+                             + (f" · {r.kw_outside:,} on NU Pro" if r.kw_outside else ""))
         self.tiles["ca"].set(f"{r.ca_addon:,}", f"{r.ca_included:,} included free")
         self.tiles["access"].set(f"{r.access_addon:,}", f"{r.access_included:,} included free")
         self.tiles["monthly"].set(f"{r.monthly:,.0f}", f"{r.monthly * 12:,.0f} per year")
@@ -587,7 +590,8 @@ class App(ttk.Frame):
         self.manual_entry.config(state="normal" if mode == "manual" else "disabled")
         typed = self.ea_count.get().strip()
         if mode == "manual":
-            state = f"manual — raised to {r.ea_licenses:,}" if r.manual_raised else "manual"
+            state = (f"manual — EA minimum is {s['min_ea']:,}" if r.manual_raised else
+                     f"manual — {r.kw_outside:,} KW on NU Pro" if r.kw_outside else "manual")
             # Mirror a value set on the Rules tab, but never overwrite a half-typed number.
             sync = typed.isdigit() and int(typed) != s["ea_manual"]
             shown = s["ea_manual"]
@@ -607,8 +611,13 @@ class App(ttk.Frame):
             self.ea_auto.pack_forget()
         notes = []
         if r.manual_raised:
-            notes.append(f"Manual quantity raised to {r.ea_licenses:,}: the EA must cover all "
-                         f"{r.knowledge_workers:,} knowledge workers and the {s['min_ea']:,} minimum.")
+            notes.append(f"Manual quantity raised to the EA minimum of {s['min_ea']:,}.")
+        if r.kw_outside:
+            p_pro = s["price_nu_pro"] * (1 - s["nu_discount_pct"] / 100)
+            notes.append(f"⚠ {r.kw_outside:,} of {r.knowledge_workers:,} knowledge workers are outside the "
+                         f"{r.ea_licenses:,} EA licences and priced as Named User Professional "
+                         f"({money(p_pro)}/month). Cisco normally requires the EA to cover all knowledge "
+                         "workers, so confirm this mix with Cisco or the distributor before quoting.")
         elif mode == "match":
             notes.append(f"{r.ea_licenses:,} EA licences make the free allowance cover every device "
                          f"({r.ca_included:,} Common Area, {r.access_included:,} Access).")
@@ -622,10 +631,12 @@ class App(ttk.Frame):
             extra = r.term_total - cheapest.term_total
             if abs(extra) >= 0.005:
                 notes.append(f"Costs {money(abs(extra))} {'more' if extra > 0 else 'less'} over {term} months than "
-                             f"the cheapest option ({cheapest.ea_licenses:,} EA + add-ons).")
+                             f"{cheapest.ea_licenses:,} EA + add-ons (all knowledge workers on the EA).")
         notes.append(f"You can grow to {r.growth_ceiling:,} KWs inside the "
                      f"{s['growth_allowance_pct']:g}% growth allowance.")
-        self.note_label.config(text="ⓘ  " + " ".join(notes))
+        self.note_label.config(text=("" if r.kw_outside else "ⓘ  ") + " ".join(notes),
+                               bg=C["warn_soft"] if r.kw_outside else C["accent_soft"],
+                               fg=C["warn"] if r.kw_outside else C["navy"])
 
         self.tree.delete(*self.tree.get_children())
         key_rows = {"Flex EA Knowledge Worker licences", "   Common Area add-on licences", "   Access add-on licences"}
@@ -668,7 +679,8 @@ class App(ttk.Frame):
             return ("+" if d > 0 else "") + fmt, ("up",) if d > 0 else ("down",) if d < 0 else ()
 
         rows = [
-            ("Professional", (f"{r.ea_licenses:,} EA KW", f"{nu.qty['nu_pro']:,}", ""), ()),
+            ("Professional", (f"{r.ea_licenses:,} EA" + (f" + {r.kw_outside:,} NU" if r.kw_outside else " KW"),
+                              f"{nu.qty['nu_pro']:,}", ""), ()),
             ("Enhanced / Common Area",
              (f"{r.ca_addon:,} add-on · {min(r.ca_devices, r.ca_included):,} free", f"{nu.qty['nu_enh']:,}", ""), ()),
             ("Access",
@@ -709,6 +721,8 @@ class App(ttk.Frame):
         y = self.px(20)
         parts = [("EA KW", r.cost_kw, TYPE_COLOR["KW"]), ("Common Area", r.cost_ca, TYPE_COLOR["CA"]),
                  ("Access", r.cost_access, TYPE_COLOR["ACCESS"])]
+        if r.kw_outside:
+            parts.append(("NU Pro (outside EA)", r.cost_kw_outside, C["nu"]))
         total = sum(p[1] for p in parts)
         cv.create_rectangle(0, y, w, y + bar_h, fill=C["track"], width=0)
         x = 0
@@ -775,7 +789,7 @@ class App(ttk.Frame):
             label,
             (f"{o.ea_licenses:,}", f"{o.ca_addon:,}", f"{o.access_addon:,}", money(o.monthly),
              money(o.term_total), ("+" if o.term_total > base else "") + money(o.term_total - base)),
-            ("key",) if i == 0 else ("up",) if o.term_total > base else ())
+            ("key",) if i == 0 else ("up",) if o.term_total > base else ("down",) if o.term_total < base else ())
             for i, (label, o) in enumerate(options)])
         m = marginal_costs(s)
         self.scen_note.config(text=(
@@ -897,7 +911,7 @@ class App(ttk.Frame):
             vs.column_dimensions[col].width = 26
 
         sc = wb.create_sheet("More KW vs add-ons")
-        sc.append(["Option", "EA KW", "CA add-on", "Access add-on", "Monthly", "Term total", "vs recommended"])
+        sc.append(["Option", "EA KW", "CA add-on", "Access add-on", "Monthly", "Term total", "vs all KWs on EA"])
         for c in sc[1]:
             c.font, c.fill = head, fill
         options = kw_scenarios(self.quantities(), s)

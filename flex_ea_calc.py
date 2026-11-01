@@ -90,7 +90,9 @@ class Result:
     growth_ceiling: int = 0        # KW count reachable inside the growth allowance
     premises_reg: int = 0          # included premises device registrations
     min_applied: bool = False
-    manual_raised: bool = False    # manual EA quantity was below the KW count / EA minimum
+    manual_raised: bool = False    # manual EA quantity was below the EA minimum
+    kw_outside: int = 0            # knowledge workers above the EA quantity (priced as NU Professional)
+    cost_kw_outside: float = 0.0   # monthly
     lines: list = field(default_factory=list)   # (type, qty, sized qty, treatment)
     cost_kw: float = 0.0           # monthly, after discount
     cost_ca: float = 0.0
@@ -111,7 +113,7 @@ def _addons(n, kw, ca, access, ca_pct, access_pct):
     """
     ca_ex = max(0, ca - _pct_of(n, ca_pct))
     ac_ex = max(0, access - _pct_of(n, access_pct))
-    spare = n - kw
+    spare = max(0, n - kw)
     used = min(spare, ac_ex)
     ac_ex -= used
     ca_ex = max(0, ca_ex - (spare - used))
@@ -146,9 +148,12 @@ def calculate(quantities, settings):
     n = max(kw, min_ea, int(s.get("ea_override") or 0))
     mode = s["excess_mode"]
     if mode == "manual":
+        # Any EA quantity down to the EA minimum. Knowledge workers above it are priced as
+        # Named User Professional (see kw_outside) - Cisco normally wants the EA to cover all KWs.
         want = max(0, int(s["ea_manual"] or 0))
-        r.manual_raised = 0 < want < n
-        n = max(n, want)
+        if want:
+            r.manual_raised = want < min_ea
+            n = max(want, min_ea, int(s.get("ea_override") or 0))
     elif mode == "match":
         # Enough EA licences that the free 50% / 20% alone covers every Common Area and Access device.
         for devices, pct in ((ca, ca_pct), (ac, access_pct)):
@@ -172,7 +177,8 @@ def calculate(quantities, settings):
 
     r.ea_licenses = n
     r.min_applied = min_ea > kw and n == min_ea
-    r.spare_kw = n - kw
+    r.spare_kw = max(0, n - kw)
+    r.kw_outside = max(0, kw - n)
     r.ca_included = _pct_of(n, ca_pct)
     r.access_included = _pct_of(n, access_pct)
     r.ca_addon, r.access_addon = _addons(n, kw, ca, ac, ca_pct, access_pct)
@@ -196,7 +202,9 @@ def _price(r, s):
     r.cost_kw = r.ea_licenses * p_kw
     r.cost_ca = r.ca_addon * p_ca
     r.cost_access = r.access_addon * p_ac
-    r.monthly = r.cost_kw + r.cost_ca + r.cost_access
+    nu_f = 1 - max(0.0, min(100.0, float(s["nu_discount_pct"]))) / 100.0
+    r.cost_kw_outside = r.kw_outside * float(s["price_nu_pro"]) * nu_f
+    r.monthly = r.cost_kw + r.cost_ca + r.cost_access + r.cost_kw_outside
     r.term_total = r.monthly * max(1, int(s["term_months"]))
 
 
@@ -213,13 +221,20 @@ def kw_scenarios(quantities, settings, extra_steps=(0, 10, 25, 50, 100, 250, 500
         n = base.ea_licenses + step
         if n not in seen:
             seen.add(n)
-            out.append(("Recommended" if step == 0 else f"+{step} KW",
+            out.append(("All KWs on EA" if step == 0 else f"+{step} KW",
                         calculate(quantities, {**s, "ea_override": n})))
     for mode, label in (("ea", "Fewest KW, no add-ons"), ("match", "Match free allowance")):
         n = calculate(quantities, {**s, "excess_mode": mode}).ea_licenses
         if n not in seen:
             seen.add(n)
             out.append((label, calculate(quantities, {**s, "ea_override": n})))
+    # Smaller EAs: the EA minimum and 3/4, 1/2, 1/4 of the knowledge workers, rest on NU Professional.
+    kw, min_ea = base.knowledge_workers, max(0, int(s["min_ea"]))
+    for n in sorted({min_ea, kw * 3 // 4, kw // 2, kw // 4}, reverse=True):
+        if min_ea <= n < kw and n > 0 and n not in seen:
+            seen.add(n)
+            out.append((f"{n:,} EA + {kw - n:,} NU Pro",
+                        calculate(quantities, {**s, "excess_mode": "manual", "ea_manual": n})))
     return out
 
 
@@ -410,6 +425,9 @@ def summary_text(r, settings):
         out.append(f"COMMON AREA ADD-ON LICENCES:       {r.ca_addon}")
     if r.access_addon:
         out.append(f"ACCESS ADD-ON LICENCES:            {r.access_addon}")
+    if r.kw_outside:
+        out.append(f"KWs OUTSIDE THE EA (NU Professional): {r.kw_outside}   "
+                   "! Cisco normally requires the EA to cover all knowledge workers")
     p_kw, p_ca, p_ac = unit_prices(s)
     term = int(s["term_months"])
     out += [
@@ -419,6 +437,9 @@ def summary_text(r, settings):
         f"  {SKUS['ca']:<17}{r.ca_addon:>16,}{p_ca:>10,.2f}{r.cost_ca:>12,.2f}{r.cost_ca * term:>12,.2f}",
         f"  {SKUS['access']:<17}{r.access_addon:>16,}{p_ac:>10,.2f}{r.cost_access:>12,.2f}"
         f"{r.cost_access * term:>12,.2f}",
+    ] + ([f"  {SKUS['nu_pro'] + ' (outside EA)':<29}{r.kw_outside:>4,}"
+          f"{r.cost_kw_outside / r.kw_outside:>10,.2f}{r.cost_kw_outside:>12,.2f}{r.cost_kw_outside * term:>12,.2f}"]
+         if r.kw_outside else []) + [
         f"  {'TOTAL':<43}{r.monthly:>12,.2f}{r.term_total:>12,.2f}",
         "",
         f"Growth allowance ({s['growth_allowance_pct']:g}%): up to {r.growth_ceiling} KWs without true-forward",
