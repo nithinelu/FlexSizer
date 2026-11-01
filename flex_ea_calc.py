@@ -26,6 +26,7 @@ Enhanced (Task Worker / Common Area) -> NU Enhanced, Access -> NU Access.
 """
 
 import math
+import re
 from dataclasses import dataclass, field
 
 DATA_SHEET_URL = ("https://www.cisco.com/c/en/us/products/collateral/unified-communications/"
@@ -207,6 +208,111 @@ def marginal_costs(settings):
     # money while add-ons are being bought.
     kw_net = p_kw - p_ca * float(s["ca_pct"]) / 100.0 - p_ac * float(s["access_pct"]) / 100.0
     return {"ca": p_ca, "access": p_ac, "kw": p_kw, "kw_net": kw_net}
+
+
+# ---------------------------------------------------------------- phone models -> UCL licence
+# From Cisco's UCL descriptions: Basic = one device incl. all Essential devices, basic call
+# control (6911, 6921, 9811); Enhanced = one device incl. all Basic devices, advanced call
+# control incl. desktop/mobile clients (3911, 3951, 6941/45/61, 79xx, 89xx, 9841/51/61/71,
+# 99xx, E20, EX60, EX90, third-party SIP). Essential = one basic voice/analog device
+# (analog phone/fax, ATA 186/187, 3905, 6901). Enhanced Plus = up to 2 devices, CUWL = up
+# to 10 devices per user. TelePresence Room endpoints are included in Flex (no licence to
+# buy); CTI route points/ports are covered by EA KW licences, else need UCL Enhanced.
+ROOM = "TelePresence Room"
+CTI = "CTI route point / port"
+PHONE_MODELS = {
+    "Analog phone / fax port": "UCL Essential",
+    "Cisco ATA 186/187/190/191": "UCL Essential",
+    "Cisco 3905": "UCL Essential",
+    "Cisco 6901": "UCL Essential",
+    "Cisco 6911": "UCL Basic",
+    "Cisco 6921": "UCL Basic",
+    "Cisco 9811": "UCL Basic",
+    "Cisco 3911": "UCL Enhanced",
+    "Cisco 3951": "UCL Enhanced",
+    "Cisco 6941": "UCL Enhanced",
+    "Cisco 6945": "UCL Enhanced",
+    "Cisco 6961": "UCL Enhanced",
+    "Cisco 79xx": "UCL Enhanced",
+    "Cisco 89xx": "UCL Enhanced",
+    "Cisco 9841": "UCL Enhanced",
+    "Cisco 9851": "UCL Enhanced",
+    "Cisco 9861": "UCL Enhanced",
+    "Cisco 9871": "UCL Enhanced",
+    "Cisco 99xx": "UCL Enhanced",
+    "Cisco E20": "UCL Enhanced",
+    "Cisco TelePresence EX60": "UCL Enhanced",
+    "Cisco TelePresence EX90": "UCL Enhanced",
+    "Third-party SIP phone": "UCL Enhanced",
+    "Cisco TelePresence SX / MX / TX / IX": ROOM,
+    "Cisco TelePresence System 3200/3000/1300 / Profile": ROOM,
+    "Webex Room / Room Kit (Spark Room)": ROOM,
+    CTI: CTI,
+}
+# How many devices the person behind the phone uses decides the licence above the model's own.
+DEVICE_USE = {
+    "Phone only": None,
+    "Phone + 1 device (Jabber / Webex)": "UCL Enhanced Plus",
+    "Phone + 2 to 9 devices": "UWL Standard",
+}
+DEFAULT_MODEL_LICENCE = "UCL Enhanced"   # Enhanced covers any single device
+
+
+def licence_for_model(model):
+    """(licence, known) for a phone model name or number such as '7942', 'CP-9811' or 'Cisco 79xx'."""
+    if model in PHONE_MODELS:
+        return PHONE_MODELS[model], True
+    text = model.upper()
+    if "CTI" in text:
+        return CTI, True
+    if "ANALOG" in text or "ATA" in text or "FAX" in text or text.strip().startswith("VG"):
+        return "UCL Essential", True
+    groups = re.findall(r"\d{4}", text)   # model number in names and part numbers (DP-9841-K9)
+    digits = groups[0] if groups else ""
+    if (re.search(r"\b(?:CTS-|TTC\d-)?(SX|MX|TX|IX)\d", text) or "ROOM" in text or "PROFILE" in text
+            or "BOARD" in text or digits in ("3200", "3000", "1300")):
+        return ROOM, True
+    for name, lic in PHONE_MODELS.items():
+        key = name.split()[-1].upper()
+        if key.endswith("XX") and len(digits) == 4 and digits[:2] == key[:2]:
+            return lic, True
+        if key == digits or key == text.strip() or (key.isalnum() and key in text.split()):
+            return lic, True
+    if "SIP" in text:
+        return "UCL Enhanced", True
+    return DEFAULT_MODEL_LICENCE, False
+
+
+def suggest_licences(rows, cti_as_enhanced=False):
+    """rows: [(model, qty, device use, licence override or '')].
+
+    Returns ({licence: qty}, {ROOM: qty, CTI: qty}, [(model, qty, use, licence, why)]).
+    Room endpoints are never licence rows; CTI ports become UCL Enhanced only when asked
+    (Named User agreements have no KW licences to cover them).
+    """
+    totals = {lic: 0 for lic in LICENSE_TYPES}
+    extras = {ROOM: 0, CTI: 0}
+    detail = []
+    for model, qty, use, override in rows:
+        model_lic, known = licence_for_model(model)
+        if override:
+            lic, why = override, "set by you"
+        elif model_lic in (ROOM, CTI):
+            lic = model_lic
+            why = "included in Flex" if lic == ROOM else (
+                "counted as UCL Enhanced" if cti_as_enhanced else "covered by EA KW licences")
+        elif DEVICE_USE.get(use):
+            lic, why = DEVICE_USE[use], use.lower()
+        else:
+            lic, why = model_lic, "Cisco UCL table" if known else "not in list - Enhanced assumed"
+        if lic == CTI and cti_as_enhanced:
+            totals["UCL Enhanced"] += qty
+        elif lic in extras:
+            extras[lic] += qty
+        else:
+            totals[lic] += qty
+        detail.append((model, qty, use, lic, why))
+    return totals, extras, detail
 
 
 @dataclass

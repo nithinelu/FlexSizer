@@ -10,9 +10,9 @@ import tkinter as tk
 import webbrowser
 from tkinter import filedialog, messagebox, ttk
 
-from flex_ea_calc import (DATA_SHEET_URL, DEFAULT_SETTINGS, LICENSE_TYPES, NU_TIER, SKUS, TREATMENTS,
-                          calculate, calculate_nu, compare, kw_scenarios, marginal_costs, summary_text,
-                          unit_prices)
+from flex_ea_calc import (CTI, DATA_SHEET_URL, DEFAULT_SETTINGS, DEVICE_USE, LICENSE_TYPES, NU_TIER,
+                          PHONE_MODELS, ROOM, SKUS, TREATMENTS, calculate, calculate_nu, compare, kw_scenarios,
+                          licence_for_model, marginal_costs, suggest_licences, summary_text, unit_prices)
 
 APP_NAME = "FlexSizer"
 APP_TAGLINE = "Cisco Collaboration Flex 3.0 EA sizing"
@@ -111,6 +111,144 @@ class Tile(tk.Frame):
         self.detail.config(text=detail)
 
 
+class PhoneDialog(tk.Toplevel):
+    """List phone models + quantities; suggests the UCL licence type for each and fills the licence counts."""
+
+    AUTO = "Auto (from model)"
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.app = app
+        self.title(f"{APP_NAME} — size from phone models")
+        self.configure(background=C["bg"])
+        self.transient(app.winfo_toplevel())
+        self.minsize(app.px(1000), app.px(600))
+        self.geometry(f"{app.px(1120)}x{app.px(640)}")
+        self.model = tk.StringVar()
+        self.qty = tk.StringVar(value="1")
+        self.use = tk.StringVar(value=next(iter(DEVICE_USE)))
+        self.override = tk.StringVar(value=self.AUTO)
+        self.cti_enh = tk.BooleanVar(value=app.phone_cti_enh)
+        self._build()
+        for v in (self.model, self.use, self.override):
+            v.trace_add("write", lambda *_: self._hint())
+        self.cti_enh.trace_add("write", lambda *_: self.refresh())
+        self.refresh()
+        self._hint()
+
+    def _build(self):
+        px = self.app.px
+        body = ttk.Frame(self, style="App.TFrame", padding=14)
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(1, weight=1)
+
+        form = ttk.LabelFrame(body, text="Add phones")
+        form.grid(row=0, column=0, columnspan=2, sticky="ew")
+        for col, text in enumerate(("Phone model / part number", "Quantity", "Person uses", "Licence")):
+            ttk.Label(form, text=text, style="ColHead.TLabel").grid(row=0, column=col, sticky="w", padx=(0, 8))
+        model_box = ttk.Combobox(form, textvariable=self.model, values=list(PHONE_MODELS), width=34)
+        model_box.grid(row=1, column=0, sticky="w", padx=(0, 8))
+        model_box.focus_set()
+        ttk.Spinbox(form, from_=1, to=1_000_000, width=8, textvariable=self.qty).grid(row=1, column=1, padx=(0, 8))
+        ttk.Combobox(form, textvariable=self.use, values=list(DEVICE_USE), state="readonly", width=30).grid(
+            row=1, column=2, padx=(0, 8))
+        ttk.Combobox(form, textvariable=self.override, values=[self.AUTO] + LICENSE_TYPES + [ROOM, CTI],
+                     state="readonly", width=20).grid(row=1, column=3, padx=(0, 8))
+        ttk.Button(form, text="Add", style="Accent.TButton", command=self.add).grid(row=1, column=4)
+        self.hint = ttk.Label(form, text="", style="Muted.TLabel")
+        self.hint.grid(row=2, column=0, columnspan=5, sticky="w", pady=(6, 0))
+        self.bind("<Return>", lambda e: self.add())
+
+        lst = ttk.LabelFrame(body, text="Phones")
+        lst.grid(row=1, column=0, sticky="nsew", pady=(14, 0))
+        self.tree = self.app._table(lst, ("qty", "use", "lic", "why"), ("Qty", "Person uses", "Licence", "Why"),
+                                    (55, 200, 150, 220), first=("Model", 150), anchors=("e", "w", "w", "w"))
+        self.tree.bind("<Delete>", lambda e: self.remove())
+        btns = ttk.Frame(lst)
+        btns.pack(fill="x", pady=(8, 0))
+        ttk.Button(btns, text="Remove selected", command=self.remove).pack(side="left")
+        ttk.Button(btns, text="Clear all", command=self.clear).pack(side="left", padx=8)
+        ttk.Checkbutton(btns, text="CTI ports need UCL Enhanced (Named User)",
+                        variable=self.cti_enh).pack(side="right")
+
+        tot = ttk.LabelFrame(body, text="Suggested licences")
+        tot.grid(row=1, column=1, sticky="nsew", padx=(14, 0), pady=(14, 0))
+        self.total_labels = {}
+        for i, lic in enumerate(LICENSE_TYPES):
+            how = self.app.settings["treatment"][lic]
+            tk.Label(tot, text="●", fg=TYPE_COLOR[how], bg=C["surface"], font=(F, 11)).grid(row=i, column=0)
+            ttk.Label(tot, text=lic).grid(row=i, column=1, sticky="w", padx=(4, 16), pady=3)
+            self.total_labels[lic] = ttk.Label(tot, text="0", font=(F, 11, "bold"))
+            self.total_labels[lic].grid(row=i, column=2, sticky="e")
+        self.extra_note = ttk.Label(tot, text="", style="Muted.TLabel", justify="left", wraplength=px(260))
+        self.extra_note.grid(row=len(LICENSE_TYPES), column=0, columnspan=3, sticky="w", pady=(10, 0))
+        act = ttk.Frame(tot)
+        act.grid(row=len(LICENSE_TYPES) + 1, column=0, columnspan=3, sticky="ew", pady=(14, 0))
+        ttk.Button(act, text="Replace licence quantities", style="Accent.TButton",
+                   command=lambda: self.apply(replace=True)).pack(fill="x")
+        ttk.Button(act, text="Add to licence quantities", command=lambda: self.apply(replace=False)).pack(
+            fill="x", pady=(6, 0))
+        ttk.Button(act, text="Close", command=self.destroy).pack(fill="x", pady=(6, 0))
+
+    def _hint(self):
+        model = self.model.get().strip()
+        if not model:
+            self.hint.config(text="Pick a model or type one (e.g. 7942, CP-9811-K9, SX80, ATA 191, CTI port).")
+            return
+        lic, known = licence_for_model(model)
+        text = f"→ {lic}" + ("" if known else "  (not in Cisco's list — Enhanced covers any single device)")
+        if self.override.get() != self.AUTO:
+            text = f"→ {self.override.get()} (set by you)"
+        elif DEVICE_USE.get(self.use.get()) and lic not in (ROOM, CTI):
+            text = f"→ {DEVICE_USE[self.use.get()]} because the person uses {self.use.get().lower()[8:]}"
+        self.hint.config(text=text)
+
+    def add(self):
+        model, qty = self.model.get().strip(), to_number(self.qty.get())
+        if not model or not qty:
+            return
+        over = "" if self.override.get() == self.AUTO else self.override.get()
+        self.app.phone_rows.append((model, qty, self.use.get(), over))
+        self.model.set("")
+        self.qty.set("1")
+        self.override.set(self.AUTO)
+        self.refresh()
+
+    def remove(self):
+        picked = {self.tree.index(i) for i in self.tree.selection()}
+        self.app.phone_rows[:] = [r for i, r in enumerate(self.app.phone_rows) if i not in picked]
+        self.refresh()
+
+    def clear(self):
+        self.app.phone_rows.clear()
+        self.refresh()
+
+    def refresh(self):
+        self.app.phone_cti_enh = self.cti_enh.get()
+        self.totals, extras, detail = suggest_licences(self.app.phone_rows, self.cti_enh.get())
+        self.tree.delete(*self.tree.get_children())
+        self.app._rows(self.tree, [(m, (f"{q:,}", u, lic, why), ("up",) if "assumed" in why else ())
+                                   for m, q, u, lic, why in detail])
+        for lic, lbl in self.total_labels.items():
+            lbl.config(text=f"{self.totals[lic]:,}")
+        notes = []
+        if extras[ROOM]:
+            notes.append(f"{extras[ROOM]:,} TelePresence Room endpoint(s): included in Flex, no licence to buy.")
+        if extras[CTI]:
+            notes.append(f"{extras[CTI]:,} CTI route point(s)/port(s): covered by EA KW licences. "
+                         "Tick the box for a Named User agreement.")
+        if any("assumed" in d[4] for d in detail):
+            notes.append("Orange rows: model not in Cisco's list, sized as UCL Enhanced — change the Licence if needed.")
+        self.extra_note.config(text="\n\n".join(notes))
+
+    def apply(self, replace):
+        for lic in LICENSE_TYPES:
+            base = 0 if replace else to_number(self.app.qty_vars[lic].get())
+            self.app.qty_vars[lic].set(str(base + self.totals[lic]))
+        self.destroy()
+
+
 class App(ttk.Frame):
     def __init__(self, master):
         super().__init__(master, padding=14, style="App.TFrame")
@@ -123,6 +261,8 @@ class App(ttk.Frame):
                           for key, _, _ in RULE_FIELDS + PRICE_FIELDS}
         self.excess_mode = tk.StringVar(value=self.settings["excess_mode"])
         self.whatif_vars = {key: tk.StringVar(value="0") for key, _ in WHATIF_FIELDS}
+        self.phone_rows = []          # (model, qty, person uses, licence override) from the phone dialog
+        self.phone_cti_enh = False
         self.result = None
         self._build()
         for v in [*self.qty_vars.values(), *self.how_vars.values(), *self.rule_vars.values(),
@@ -175,8 +315,11 @@ class App(ttk.Frame):
                 self.first_entry = e
             ttk.Combobox(inp, values=list(TREATMENTS.values()), state="readonly", width=33,
                          textvariable=self.how_vars[lic]).grid(row=i, column=2, pady=3)
-        ttk.Button(inp, text="Clear quantities", command=self.clear).grid(
-            row=len(LICENSE_TYPES) + 1, column=0, columnspan=3, sticky="w", pady=(10, 0))
+        btns = ttk.Frame(inp)
+        btns.grid(row=len(LICENSE_TYPES) + 1, column=0, columnspan=3, sticky="w", pady=(10, 0))
+        ttk.Button(btns, text="Size from phone models…", style="Accent.TButton",
+                   command=lambda: PhoneDialog(self)).pack(side="left")
+        ttk.Button(btns, text="Clear quantities", command=self.clear).pack(side="left", padx=8)
 
     def _build_rules(self, parent):
         box = ttk.LabelFrame(parent, text="2  Rules & pricing")
@@ -298,14 +441,14 @@ class App(ttk.Frame):
         self.unit_note.bind("<Configure>", lambda e: self.unit_note.config(wraplength=e.width))
         tabs.add(wi, text="What-if: add devices")
 
-    def _table(self, parent, cols, heads, widths, first, headings=True, pady=0):
+    def _table(self, parent, cols, heads, widths, first, headings=True, pady=0, anchors=None):
         box = ttk.Frame(parent)
         box.pack(fill="both", expand=True, pady=pady)
         tree = ttk.Treeview(box, columns=cols, show="tree headings" if headings else "tree", height=9)
         tree.heading("#0", text=first[0])
-        for c, h in zip(cols, heads):
-            tree.heading(c, text=h)
-            tree.column(c, anchor="e", stretch=False)
+        for c, h, anchor in zip(cols, heads, anchors or ["e"] * len(cols)):
+            tree.heading(c, text=h, anchor=anchor if anchor == "w" else "center")
+            tree.column(c, anchor=anchor, stretch=False)
         # Widths are proportions: share the table's actual width so no column is clipped.
         shares = list(zip(("#0",) + tuple(cols), (first[1],) + tuple(widths)))
         total = sum(w for _, w in shares)
@@ -710,9 +853,9 @@ def setup_style(root):
     # Panels are plain white cards: no inner border, title sits on the card.
     s.configure("TLabelframe", background=C["surface"], borderwidth=0, relief="flat", padding=(16, 6, 16, 14))
     s.configure("TLabelframe.Label", background=C["surface"], foreground=C["navy"], font=(F, 11, "bold"))
-    for w in ("TFrame", "TLabel", "TRadiobutton"):
+    for w in ("TFrame", "TLabel", "TRadiobutton", "TCheckbutton"):
         s.configure(w, background=C["surface"])
-    s.map("TRadiobutton", background=[("active", C["surface"])])
+        s.map(w, background=[("active", C["surface"])])
     s.configure("App.TFrame", background=C["bg"])
     s.configure("ColHead.TLabel", foreground=C["muted"], font=(F, 9, "bold"))
     s.configure("Muted.TLabel", foreground=C["muted"], font=(F, 9))
