@@ -10,8 +10,8 @@ import tkinter as tk
 import webbrowser
 from tkinter import filedialog, messagebox, ttk
 
-from flex_ea_calc import (CTI, DATA_SHEET_URL, DEFAULT_SETTINGS, DEVICE_USE, EA_MODES, LICENSE_TYPES, NU_TIER,
-                          PHONE_MODELS, ROOM, SKUS, TREATMENTS, calculate, calculate_nu, compare, kw_scenarios,
+from flex_ea_calc import (CTI, DATA_SHEET_URL, DEFAULT_SETTINGS, EA_MODES, LICENSE_TYPES, NO_SECOND, NU_TIER,
+                          PHONE_MODELS, ROOM, SKUS, SOFT_CLIENTS, TREATMENTS, calculate, calculate_nu, compare, kw_scenarios,
                           licence_for_model, marginal_costs, suggest_licences, summary_text, unit_prices)
 
 APP_NAME = "FlexSizer"
@@ -125,12 +125,13 @@ class PhoneDialog(tk.Toplevel):
         self.minsize(app.px(1000), app.px(600))
         self.geometry(f"{app.px(1120)}x{app.px(640)}")
         self.model = tk.StringVar()
+        self.model2 = tk.StringVar(value=NO_SECOND)
         self.qty = tk.StringVar(value="1")
-        self.use = tk.StringVar(value=next(iter(DEVICE_USE)))
+        self.soft = tk.StringVar(value=next(iter(SOFT_CLIENTS)))
         self.override = tk.StringVar(value=self.AUTO)
         self.cti_enh = tk.BooleanVar(value=app.phone_cti_enh)
         self._build()
-        for v in (self.model, self.use, self.override):
+        for v in (self.model, self.model2, self.soft, self.override):
             v.trace_add("write", lambda *_: self._hint())
         self.cti_enh.trace_add("write", lambda *_: self.refresh())
         self.refresh()
@@ -143,27 +144,31 @@ class PhoneDialog(tk.Toplevel):
         body.columnconfigure(0, weight=1)
         body.rowconfigure(1, weight=1)
 
-        form = ttk.LabelFrame(body, text="Add phones")
+        form = ttk.LabelFrame(body, text="Add users and their phones")
         form.grid(row=0, column=0, columnspan=2, sticky="ew")
-        for col, text in enumerate(("Phone model / part number", "Quantity", "Person uses", "Licence")):
+        heads = ("Phone model / part number", "2nd phone (same user)", "Soft clients", "Users", "Licence")
+        for col, text in enumerate(heads):
             ttk.Label(form, text=text, style="ColHead.TLabel").grid(row=0, column=col, sticky="w", padx=(0, 8))
-        model_box = ttk.Combobox(form, textvariable=self.model, values=list(PHONE_MODELS), width=34)
+        model_box = ttk.Combobox(form, textvariable=self.model, values=list(PHONE_MODELS), width=28)
         model_box.grid(row=1, column=0, sticky="w", padx=(0, 8))
         model_box.focus_set()
-        ttk.Spinbox(form, from_=1, to=1_000_000, width=8, textvariable=self.qty).grid(row=1, column=1, padx=(0, 8))
-        ttk.Combobox(form, textvariable=self.use, values=list(DEVICE_USE), state="readonly", width=30).grid(
+        ttk.Combobox(form, textvariable=self.model2, values=[NO_SECOND] + list(PHONE_MODELS), width=24).grid(
+            row=1, column=1, sticky="w", padx=(0, 8))
+        ttk.Combobox(form, textvariable=self.soft, values=list(SOFT_CLIENTS), state="readonly", width=19).grid(
             row=1, column=2, padx=(0, 8))
+        ttk.Spinbox(form, from_=1, to=1_000_000, width=7, textvariable=self.qty).grid(row=1, column=3, padx=(0, 8))
         ttk.Combobox(form, textvariable=self.override, values=[self.AUTO] + LICENSE_TYPES + [ROOM, CTI],
-                     state="readonly", width=20).grid(row=1, column=3, padx=(0, 8))
-        ttk.Button(form, text="Add", style="Accent.TButton", command=self.add).grid(row=1, column=4)
+                     state="readonly", width=17).grid(row=1, column=4, padx=(0, 8))
+        ttk.Button(form, text="Add", style="Accent.TButton", command=self.add).grid(row=1, column=5)
         self.hint = ttk.Label(form, text="", style="Muted.TLabel")
-        self.hint.grid(row=2, column=0, columnspan=5, sticky="w", pady=(6, 0))
+        self.hint.grid(row=2, column=0, columnspan=6, sticky="w", pady=(6, 0))
         self.bind("<Return>", lambda e: self.add())
 
-        lst = ttk.LabelFrame(body, text="Phones")
+        lst = ttk.LabelFrame(body, text="Users and phones")
         lst.grid(row=1, column=0, sticky="nsew", pady=(14, 0))
-        self.tree = self.app._table(lst, ("qty", "use", "lic", "why"), ("Qty", "Person uses", "Licence", "Why"),
-                                    (55, 200, 150, 220), first=("Model", 150), anchors=("e", "w", "w", "w"))
+        self.tree = self.app._table(lst, ("qty", "soft", "lic", "why"), ("Users", "Soft clients", "Licence", "Why"),
+                                    (50, 120, 140, 220), first=("Phone(s) per user", 210),
+                                    anchors=("e", "w", "w", "w"))
         self.tree.bind("<Delete>", lambda e: self.remove())
         btns = ttk.Frame(lst)
         btns.pack(fill="x", pady=(8, 0))
@@ -194,23 +199,25 @@ class PhoneDialog(tk.Toplevel):
     def _hint(self):
         model = self.model.get().strip()
         if not model:
-            self.hint.config(text="Pick a model or type one (e.g. 7942, CP-9811-K9, SX80, ATA 191, CTI port).")
+            self.hint.config(text="Pick a model or type one (e.g. 7942, CP-9811-K9, SX80, ATA 191, CTI port). "
+                                  "Add a 2nd phone and soft clients when the same user has them.")
             return
-        lic, known = licence_for_model(model)
-        text = f"→ {lic}" + ("" if known else "  (not in Cisco's list — Enhanced covers any single device)")
-        if self.override.get() != self.AUTO:
-            text = f"→ {self.override.get()} (set by you)"
-        elif DEVICE_USE.get(self.use.get()) and lic not in (ROOM, CTI):
-            text = f"→ {DEVICE_USE[self.use.get()]} because the person uses {self.use.get().lower()[8:]}"
-        self.hint.config(text=text)
+        _, _, detail = suggest_licences([self._row()])
+        _, _, _, lic, why = detail[0]
+        self.hint.config(text=f"→ {lic} per user ({why})")
+
+    def _row(self):
+        model2 = self.model2.get().strip() or NO_SECOND
+        over = "" if self.override.get() == self.AUTO else self.override.get()
+        return (self.model.get().strip(), model2, to_number(self.qty.get()) or 1, self.soft.get(), over)
 
     def add(self):
-        model, qty = self.model.get().strip(), to_number(self.qty.get())
-        if not model or not qty:
+        if not self.model.get().strip() or not to_number(self.qty.get()):
             return
-        over = "" if self.override.get() == self.AUTO else self.override.get()
-        self.app.phone_rows.append((model, qty, self.use.get(), over))
+        self.app.phone_rows.append(self._row())
         self.model.set("")
+        self.model2.set(NO_SECOND)
+        self.soft.set(next(iter(SOFT_CLIENTS)))
         self.qty.set("1")
         self.override.set(self.AUTO)
         self.refresh()
@@ -263,6 +270,11 @@ class App(ttk.Frame):
         self.excess_mode = tk.StringVar(value=mode)                 # EA_MODES key
         self.ea_mode_label = tk.StringVar(value=EA_MODES[mode])     # what the combobox shows
         self.ea_manual = tk.StringVar(value=str(self.settings["ea_manual"]))
+        # Main-panel EA count. recalc() writes the calculated value with _syncing set; a user edit
+        # switches to manual mode with that number.
+        self.ea_count = tk.StringVar(value="0")
+        self._syncing = False
+        self.ea_count.trace_add("write", lambda *_: self._ea_count_edited())
         self.ea_mode_label.trace_add("write", lambda *_: self.excess_mode.set(
             next(k for k, v in EA_MODES.items() if v == self.ea_mode_label.get())))
         self.excess_mode.trace_add("write", lambda *_: self.ea_mode_label.get() != EA_MODES[self.excess_mode.get()]
@@ -279,6 +291,13 @@ class App(ttk.Frame):
 
     def px(self, n):
         return int(n * self.scale)
+
+    def _ea_count_edited(self):
+        if self._syncing or not self.ea_count.get().strip().isdigit():
+            return
+        self.ea_manual.set(self.ea_count.get().strip())
+        if self.excess_mode.get() != "manual":
+            self.excess_mode.set("manual")
 
     # ---------------------------------------------------------------- layout
     def _build(self):
@@ -322,8 +341,25 @@ class App(ttk.Frame):
                 self.first_entry = e
             ttk.Combobox(inp, values=list(TREATMENTS.values()), state="readonly", width=33,
                          textvariable=self.how_vars[lic]).grid(row=i, column=2, pady=3)
+
+        # Flex EA licence count: shows the calculated number; typing a number makes it manual.
+        row = len(LICENSE_TYPES) + 1
+        ttk.Separator(inp).grid(row=row, column=0, columnspan=3, sticky="ew", pady=(8, 6))
+        cell = ttk.Frame(inp)
+        cell.grid(row=row + 1, column=0, sticky="w")
+        tk.Label(cell, text="■", fg=TYPE_COLOR["KW"], bg=C["surface"], font=(F, 11)).pack(side="left", padx=(0, 6))
+        ttk.Label(cell, text="Flex EA licences", font=(F, 10, "bold")).pack(side="left")
+        ttk.Spinbox(inp, from_=0, to=1_000_000, width=9, textvariable=self.ea_count).grid(
+            row=row + 1, column=1, padx=8)
+        state = ttk.Frame(inp)
+        state.grid(row=row + 1, column=2, sticky="w")
+        self.ea_state = ttk.Label(state, text="", style="Muted.TLabel")
+        self.ea_state.pack(side="left")
+        self.ea_auto = ttk.Button(state, text="Auto", width=6, command=lambda: self.excess_mode.set("addon"))
+        self.ea_auto.pack(side="left", padx=(8, 0))
+
         btns = ttk.Frame(inp)
-        btns.grid(row=len(LICENSE_TYPES) + 1, column=0, columnspan=3, sticky="w", pady=(10, 0))
+        btns.grid(row=row + 2, column=0, columnspan=3, sticky="w", pady=(10, 0))
         ttk.Button(btns, text="Size from phone models…", style="Accent.TButton",
                    command=lambda: PhoneDialog(self)).pack(side="left")
         ttk.Button(btns, text="Clear quantities", command=self.clear).pack(side="left", padx=8)
@@ -549,6 +585,26 @@ class App(ttk.Frame):
 
         mode = s["excess_mode"]
         self.manual_entry.config(state="normal" if mode == "manual" else "disabled")
+        typed = self.ea_count.get().strip()
+        if mode == "manual":
+            state = f"manual — raised to {r.ea_licenses:,}" if r.manual_raised else "manual"
+            # Mirror a value set on the Rules tab, but never overwrite a half-typed number.
+            sync = typed.isdigit() and int(typed) != s["ea_manual"]
+            shown = s["ea_manual"]
+        else:
+            state = "auto: " + EA_MODES[mode].split(":")[0].lower()
+            sync, shown = typed != str(r.ea_licenses), r.ea_licenses
+        if sync:
+            self._syncing = True
+            try:
+                self.ea_count.set(str(shown))
+            finally:
+                self._syncing = False
+        self.ea_state.config(text=state)
+        if mode == "manual":
+            self.ea_auto.pack(side="left", padx=(8, 0))
+        else:
+            self.ea_auto.pack_forget()
         notes = []
         if r.manual_raised:
             notes.append(f"Manual quantity raised to {r.ea_licenses:,}: the EA must cover all "

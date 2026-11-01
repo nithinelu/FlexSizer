@@ -33,8 +33,8 @@ DATA_SHEET_URL = ("https://www.cisco.com/c/en/us/products/collateral/unified-com
                   "cisco-collaboration-flex-plan/collaboration-flex-plan3-data-sheet.html")
 
 LICENSE_TYPES = ["UWL Standard", "UCL Enhanced Plus", "UCL Enhanced", "UCL Essential", "UCL Basic"]
-TREATMENTS = {"KW": "Professional (Knowledge Worker)", "CA": "Enhanced (Task Worker / Common Area)",
-              "ACCESS": "Access (Analog)", "FREE": "Not counted"}
+TREATMENTS = {"KW": "Professional / KW: EA licence", "CA": "Enhanced / Common Area (free 50%)",
+              "ACCESS": "Access / Analog (free 20%)", "FREE": "Not counted"}
 
 DEFAULT_SETTINGS = {
     "treatment": {"UWL Standard": "KW", "UCL Enhanced Plus": "KW", "UCL Enhanced": "CA",
@@ -272,13 +272,21 @@ PHONE_MODELS = {
     "Webex Room / Room Kit (Spark Room)": ROOM,
     CTI: CTI,
 }
-# How many devices the person behind the phone uses decides the licence above the model's own.
-DEVICE_USE = {
-    "Phone only": None,
-    "Phone + 1 device (Jabber / Webex)": "UCL Enhanced Plus",
-    "Phone + 2 to 9 devices": "UWL Standard",
-}
+# Soft clients a user runs next to their phone(s) -> extra devices.
+SOFT_CLIENTS = {"None": 0, "1 (Jabber or Webex)": 1, "2 (Jabber and Webex)": 2, "3 or more": 3}
+NO_SECOND = "(none)"
 DEFAULT_MODEL_LICENCE = "UCL Enhanced"   # Enhanced covers any single device
+
+
+def licence_for_devices(models, soft_clients):
+    """Licence for one user: 1 device -> the phone's own UCL, 2 -> Enhanced Plus, 3-10 -> UWL Standard (CUWL)."""
+    devices = len(models) + soft_clients
+    if devices >= 3:
+        return "UWL Standard", f"{devices} devices per user (CUWL: up to 10)"
+    if devices == 2:
+        return "UCL Enhanced Plus", "2 devices per user"
+    lic, known = licence_for_model(models[0])
+    return lic, "Cisco UCL table" if known else "not in list - Enhanced assumed"
 
 
 def licence_for_model(model):
@@ -307,34 +315,35 @@ def licence_for_model(model):
 
 
 def suggest_licences(rows, cti_as_enhanced=False):
-    """rows: [(model, qty, device use, licence override or '')].
+    """rows: [(model, 2nd model or '', users, soft clients label, licence override or '')].
 
-    Returns ({licence: qty}, {ROOM: qty, CTI: qty}, [(model, qty, use, licence, why)]).
+    Each row is `users` people, each with one or two phones plus soft clients.
+    Returns ({licence: qty}, {ROOM: qty, CTI: qty}, [(models text, qty, soft, licence, why)]).
     Room endpoints are never licence rows; CTI ports become UCL Enhanced only when asked
     (Named User agreements have no KW licences to cover them).
     """
     totals = {lic: 0 for lic in LICENSE_TYPES}
     extras = {ROOM: 0, CTI: 0}
     detail = []
-    for model, qty, use, override in rows:
-        model_lic, known = licence_for_model(model)
+    for model, model2, qty, soft, override in rows:
+        models = [m for m in (model, model2) if m and m != NO_SECOND]
+        model_lic, _ = licence_for_model(model)
         if override:
             lic, why = override, "set by you"
         elif model_lic in (ROOM, CTI):
             lic = model_lic
             why = "included in Flex" if lic == ROOM else (
                 "counted as UCL Enhanced" if cti_as_enhanced else "covered by EA KW licences")
-        elif DEVICE_USE.get(use):
-            lic, why = DEVICE_USE[use], use.lower()
         else:
-            lic, why = model_lic, "Cisco UCL table" if known else "not in list - Enhanced assumed"
+            lic, why = licence_for_devices(models, SOFT_CLIENTS.get(soft, 0))
+        model = " + ".join(models)
         if lic == CTI and cti_as_enhanced:
             totals["UCL Enhanced"] += qty
         elif lic in extras:
             extras[lic] += qty
         else:
             totals[lic] += qty
-        detail.append((model, qty, use, lic, why))
+        detail.append((model, qty, soft, lic, why))
     return totals, extras, detail
 
 
