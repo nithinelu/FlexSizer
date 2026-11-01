@@ -216,8 +216,8 @@ class App(ttk.Frame):
         ttk.Label(price, text="Term (months), both").grid(row=last, column=0, sticky="w", pady=(8, 0))
         ttk.Entry(price, width=7, textvariable=self.rule_vars["term_months"], justify="right").grid(
             row=last, column=1, sticky="w", padx=(6, 0), pady=(8, 0))
-        ttk.Label(price, text="USD per licence per month. NU Professional is not on your NU quote — "
-                              "enter its CCW price.", style="Muted.TLabel", wraplength=self.px(400),
+        ttk.Label(price, text="USD list price per licence per month (CCW).", style="Muted.TLabel",
+                  wraplength=self.px(400),
                   justify="left").grid(row=last + 1, column=0, columnspan=4, sticky="w", pady=(8, 0))
         tabs.add(price, text="Pricing")
 

@@ -51,9 +51,9 @@ DEFAULT_SETTINGS = {
     "price_access": 3.95,    # A-FLEX-PL-ACCESS On-Premises Access Add-on
     "discount_pct": 0.0,     # discount off list
     "term_months": 24,
-    # Named User monthly list prices (CCW quote 4801245740, Oct 2026). NU Professional
-    # was not on that quote: 0 means "not entered yet" and the comparison warns.
-    "price_nu_pro": 0.0,     # A-FLEX-NUPL-P NU On-Premises Calling Professional
+    # Named User monthly list prices (CCW, Oct/Nov 2026). A price of 0 means "not entered"
+    # and the comparison warns instead of giving a verdict.
+    "price_nu_pro": 10.95,   # A-FLEX-NUPL-P NU On-Premises Calling Professional
     "price_nu_enh": 7.25,    # A-FLEX-NUPL-E NU On-Premises Calling Enhanced
     "price_nu_access": 3.95,  # A-FLEX-NUPL-A NU On-Premises Calling Access
     "nu_discount_pct": 0.0,
