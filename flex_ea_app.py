@@ -927,13 +927,15 @@ def main():
         try:
             import ctypes
             ctypes.windll.shcore.SetProcessDpiAwareness(1)
+            # Own taskbar identity, so Windows shows the FlexSizer icon instead of Python's.
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Nithin.FlexSizer")
         except Exception:
             pass
     root = tk.Tk()
     root.title(f"{APP_NAME} — {APP_TAGLINE}")
-    icon = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.ico")
+    icon = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.ico")   # drawn by make_icon.py
     if os.path.exists(icon):
-        root.iconbitmap(icon)
+        root.iconbitmap(default=icon)   # default= also applies to the phone-model dialog
     setup_style(root)
     app = App(root)
     header(root, app)
