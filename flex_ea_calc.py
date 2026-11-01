@@ -17,6 +17,12 @@ Existing perpetual licences map to Flex user types (Cisco migration table):
   UCL Enhanced                    -> Enhanced (Task Worker / Common Area) -> 50% free pool
   UCL Essential, UCL Basic        -> Access (Analog)                      -> 20% free pool
 Each mapping can be changed per licence type.
+
+Named User (NU) buying model, for comparison: every user/device is licensed 1:1 in its
+own tier (Professional A-FLEX-NUPL-P, Enhanced A-FLEX-NUPL-E, Access/Common Area
+A-FLEX-NUPL-A). There is no minimum, no growth allowance and no free Common Area or
+Access entitlement. The same user-type mapping is used: Professional -> NU Professional,
+Enhanced (Task Worker / Common Area) -> NU Enhanced, Access -> NU Access.
 """
 
 import math
@@ -45,9 +51,17 @@ DEFAULT_SETTINGS = {
     "price_access": 3.95,    # A-FLEX-PL-ACCESS On-Premises Access Add-on
     "discount_pct": 0.0,     # discount off list
     "term_months": 24,
+    # Named User monthly list prices (CCW quote 4801245740, Oct 2026). NU Professional
+    # was not on that quote: 0 means "not entered yet" and the comparison warns.
+    "price_nu_pro": 0.0,     # A-FLEX-NUPL-P NU On-Premises Calling Professional
+    "price_nu_enh": 7.25,    # A-FLEX-NUPL-E NU On-Premises Calling Enhanced
+    "price_nu_access": 3.95,  # A-FLEX-NUPL-A NU On-Premises Calling Access
+    "nu_discount_pct": 0.0,
 }
 
-SKUS = {"kw": "A-FLEX-EAPL", "ca": "A-FLEX-PL-COMMON", "access": "A-FLEX-PL-ACCESS"}
+SKUS = {"kw": "A-FLEX-EAPL", "ca": "A-FLEX-PL-COMMON", "access": "A-FLEX-PL-ACCESS",
+        "nu_pro": "A-FLEX-NUPL-P", "nu_enh": "A-FLEX-NUPL-E", "nu_access": "A-FLEX-NUPL-A"}
+NU_TIER = {"KW": "nu_pro", "CA": "nu_enh", "ACCESS": "nu_access"}   # EA treatment -> NU tier
 
 
 @dataclass
@@ -195,6 +209,45 @@ def marginal_costs(settings):
     return {"ca": p_ca, "access": p_ac, "kw": p_kw, "kw_net": kw_net}
 
 
+@dataclass
+class NUResult:
+    qty: dict = field(default_factory=dict)       # NU tier -> licences
+    unit: dict = field(default_factory=dict)      # NU tier -> monthly price after discount
+    cost: dict = field(default_factory=dict)      # NU tier -> monthly cost
+    monthly: float = 0.0
+    term_total: float = 0.0
+    missing_price: list = field(default_factory=list)   # tiers with users but no price entered
+
+
+def calculate_nu(r, settings):
+    """Named User cost for the quantities already sized in EA result r."""
+    s = {**DEFAULT_SETTINGS, **settings}
+    f = 1 - max(0.0, min(100.0, float(s["nu_discount_pct"]))) / 100.0
+    nu = NUResult()
+    for tier in NU_TIER.values():
+        nu.qty[tier] = 0
+        nu.unit[tier] = float(s["price_" + tier]) * f
+    for _, _, sized, how in r.lines:
+        if how in NU_TIER:
+            nu.qty[NU_TIER[how]] += sized
+    for tier, q in nu.qty.items():
+        nu.cost[tier] = q * nu.unit[tier]
+        if q and not nu.unit[tier]:
+            nu.missing_price.append(SKUS[tier])
+    nu.monthly = sum(nu.cost.values())
+    nu.term_total = nu.monthly * max(1, int(s["term_months"]))
+    return nu
+
+
+def compare(r, nu):
+    """(cheaper model, term saving, saving %) - 'EA', 'NU' or 'Same'."""
+    diff = r.term_total - nu.term_total
+    if abs(diff) < 0.005:
+        return "Same", 0.0, 0.0
+    high = max(r.term_total, nu.term_total)
+    return ("NU" if diff > 0 else "EA"), abs(diff), abs(diff) / high * 100 if high else 0.0
+
+
 def summary_text(r, settings):
     s = {**DEFAULT_SETTINGS, **settings}
     out = ["FlexSizer - Cisco Flex 3.0 EA licence sizing (on-premises calling)", ""]
@@ -231,6 +284,20 @@ def summary_text(r, settings):
         f"Growth allowance ({s['growth_allowance_pct']:g}%): up to {r.growth_ceiling} KWs without true-forward",
         f"Premises device registration included: {r.premises_reg}",
         "",
-        f"Source: Cisco Collaboration Flex Plan 3.0 data sheet - {DATA_SHEET_URL}",
     ]
+    nu = calculate_nu(r, s)
+    out.append(f"Named User alternative ({term}-month term, {s['nu_discount_pct']:g}% discount)")
+    for tier in NU_TIER.values():
+        out.append(f"  {SKUS[tier]:<17}{nu.qty[tier]:>16,}{nu.unit[tier]:>10,.2f}{nu.cost[tier]:>12,.2f}"
+                   f"{nu.cost[tier] * term:>12,.2f}")
+    out.append(f"  {'TOTAL':<43}{nu.monthly:>12,.2f}{nu.term_total:>12,.2f}")
+    winner, saving, pct = compare(r, nu)
+    if nu.missing_price:
+        out.append(f"  ! No price entered for {', '.join(nu.missing_price)} - NU total is incomplete")
+    elif winner == "Same":
+        out.append("  EA and Named User cost the same")
+    else:
+        out.append(f"  CHEAPER: {'Enterprise Agreement' if winner == 'EA' else 'Named User'} "
+                   f"saves {saving:,.2f} over {term} months ({pct:.1f}%)")
+    out += ["", f"Source: Cisco Collaboration Flex Plan 3.0 data sheet - {DATA_SHEET_URL}"]
     return "\n".join(out)

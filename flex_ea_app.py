@@ -10,8 +10,9 @@ import tkinter as tk
 import webbrowser
 from tkinter import filedialog, messagebox, ttk
 
-from flex_ea_calc import (DATA_SHEET_URL, DEFAULT_SETTINGS, LICENSE_TYPES, SKUS, TREATMENTS,
-                          calculate, kw_scenarios, marginal_costs, summary_text, unit_prices)
+from flex_ea_calc import (DATA_SHEET_URL, DEFAULT_SETTINGS, LICENSE_TYPES, NU_TIER, SKUS, TREATMENTS,
+                          calculate, calculate_nu, compare, kw_scenarios, marginal_costs, summary_text,
+                          unit_prices)
 
 APP_NAME = "FlexSizer"
 APP_TAGLINE = "Cisco Collaboration Flex 3.0 EA sizing"
@@ -29,18 +30,26 @@ RULE_FIELDS = [   # (settings key, label, number type)
     ("premises_reg_pct", "Premises device registration (% of KW)", float),
     ("headroom_pct", "Planning head-room on quantities (%)", float),
 ]
-PRICE_FIELDS = [
-    ("price_kw", f"EA Knowledge Worker  {SKUS['kw']}", float),
+EA_PRICE_FIELDS = [
+    ("price_kw", f"Knowledge Worker  {SKUS['kw']}", float),
     ("price_ca", f"Common Area add-on  {SKUS['ca']}", float),
     ("price_access", f"Access add-on  {SKUS['access']}", float),
     ("discount_pct", "Discount off list (%)", float),
-    ("term_months", "Term (months)", int),
 ]
+NU_PRICE_FIELDS = [
+    ("price_nu_pro", f"Professional  {SKUS['nu_pro']}", float),
+    ("price_nu_enh", f"Enhanced  {SKUS['nu_enh']}", float),
+    ("price_nu_access", f"Access  {SKUS['nu_access']}", float),
+    ("nu_discount_pct", "Discount off list (%)", float),
+]
+PRICE_FIELDS = EA_PRICE_FIELDS + NU_PRICE_FIELDS + [("term_months", "Term (months)", int)]
+NU_LABEL = {"nu_pro": "Professional", "nu_enh": "Enhanced", "nu_access": "Access"}
 WHATIF_FIELDS = [("kw", "+ Knowledge workers"), ("ca", "+ Common Area"), ("access", "+ Access")]
 
 C = {"bg": "#F3F6FA", "surface": "#FFFFFF", "ink": "#1E2A38", "muted": "#6B7785", "line": "#D6DDE6",
      "stripe": "#F7F9FC", "accent": "#049FD9", "accent_dark": "#0379A6", "accent_soft": "#DDF2FB",
-     "navy": "#0B2A4A", "free": "#3BB273", "orange": "#E07B39", "track": "#E9EEF4"}
+     "navy": "#0B2A4A", "free": "#3BB273", "orange": "#E07B39", "track": "#E9EEF4",
+     "good": "#1E7B45", "good_soft": "#E3F5EA", "warn": "#8A5A00", "warn_soft": "#FFF3DC", "nu": "#E0A526"}
 # One colour per Flex user type, used for the row dots, tiles and bars.
 TYPE_COLOR = {"KW": "#049FD9", "CA": "#14A38B", "ACCESS": "#7B5CD6", "FREE": "#A0AAB6"}
 F = "Segoe UI"
@@ -192,13 +201,24 @@ class App(ttk.Frame):
                         variable=self.excess_mode).pack(side="left", padx=(16, 0))
         tabs.add(rules, text="EA rules")
 
+        # USD list price per licence per month (CCW), EA and Named User side by side.
         price = ttk.Frame(tabs, padding=(4, 8))
-        for i, (key, label, _) in enumerate(PRICE_FIELDS):
-            ttk.Label(price, text=label).grid(row=i, column=0, sticky="w", pady=2)
-            ttk.Entry(price, width=9, textvariable=self.rule_vars[key], justify="right").grid(
-                row=i, column=1, sticky="w", padx=8)
-        ttk.Label(price, text="USD list price per licence per month (CCW).", style="Muted.TLabel").grid(
-            row=len(PRICE_FIELDS), column=0, columnspan=2, sticky="w", pady=(10, 0))
+        for col, (title, fields) in enumerate((("Enterprise Agreement", EA_PRICE_FIELDS),
+                                               ("Named User", NU_PRICE_FIELDS))):
+            ttk.Label(price, text=title, style="ColHead.TLabel").grid(
+                row=0, column=col * 2, columnspan=2, sticky="w", padx=(0 if col == 0 else 18, 0), pady=(0, 2))
+            for i, (key, label, _) in enumerate(fields, start=1):
+                ttk.Label(price, text=label.split("  ")[0]).grid(
+                    row=i, column=col * 2, sticky="w", pady=2, padx=(0 if col == 0 else 18, 0))
+                ttk.Entry(price, width=7, textvariable=self.rule_vars[key], justify="right").grid(
+                    row=i, column=col * 2 + 1, sticky="w", padx=(6, 0))
+        last = len(EA_PRICE_FIELDS) + 1
+        ttk.Label(price, text="Term (months), both").grid(row=last, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(price, width=7, textvariable=self.rule_vars["term_months"], justify="right").grid(
+            row=last, column=1, sticky="w", padx=(6, 0), pady=(8, 0))
+        ttk.Label(price, text="USD per licence per month. NU Professional is not on your NU quote — "
+                              "enter its CCW price.", style="Muted.TLabel", wraplength=self.px(400),
+                  justify="left").grid(row=last + 1, column=0, columnspan=4, sticky="w", pady=(8, 0))
         tabs.add(price, text="Pricing")
 
         btns = ttk.Frame(box)
@@ -220,15 +240,22 @@ class App(ttk.Frame):
             self.tiles[key] = Tile(row, caption, color)
             self.tiles[key].grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else 10, 0))
         self.ea_label = self.tiles["ea"].value
-        self.note_label = tk.Label(parent, text="", bg=C["accent_soft"], fg=C["navy"], font=(F, 9),
-                                   anchor="w", justify="left", padx=12, pady=7)
-        self.note_label.grid(row=1, column=0, sticky="ew", pady=(12, 0))
-        self.note_label.bind("<Configure>", lambda e: self.note_label.config(wraplength=e.width - 24))
+        strips = ttk.Frame(parent, style="App.TFrame")
+        strips.grid(row=1, column=0, sticky="ew", pady=(12, 0))
+        strips.columnconfigure(0, weight=1)
+        # EA vs Named User verdict; colours are set per result in recalc().
+        self.verdict = tk.Label(strips, text="", font=(F, 10, "bold"), anchor="w", justify="left", padx=12, pady=7)
+        self.verdict.grid(row=0, column=0, sticky="ew")
+        self.note_label = tk.Label(strips, text="", bg=C["accent_soft"], fg=C["navy"], font=(F, 9),
+                                   anchor="w", justify="left", padx=12, pady=6)
+        self.note_label.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        for lbl in (self.verdict, self.note_label):
+            lbl.bind("<Configure>", lambda e: e.widget.config(wraplength=e.width - 24))
 
     def _build_charts(self, parent):
         card = tk.Frame(parent, bg=C["surface"], highlightbackground=C["line"], highlightthickness=1)
         card.grid(row=2, column=0, sticky="ew", pady=(12, 0))
-        self.chart = tk.Canvas(card, height=self.px(150), bg=C["surface"], highlightthickness=0)
+        self.chart = tk.Canvas(card, height=self.px(152), bg=C["surface"], highlightthickness=0)
         self.chart.pack(fill="x", padx=14, pady=10)
         self.chart.bind("<Configure>", lambda e: self.draw_chart())
 
@@ -239,6 +266,14 @@ class App(ttk.Frame):
         summ = ttk.Frame(tabs, padding=8)
         self.tree = self._table(summ, ("value",), ("",), (130,), first=("Item", 340), headings=False)
         tabs.add(summ, text="Summary & cost")
+
+        vs = ttk.Frame(tabs, padding=8)
+        self.vs = self._table(vs, ("ea", "nu", "diff"), ("Enterprise Agreement", "Named User", "NU − EA"),
+                              (150, 150, 130), first=("", 230))
+        self.vs_note = ttk.Label(vs, text="", style="Muted.TLabel", justify="left")
+        self.vs_note.pack(anchor="w", fill="x", pady=(8, 0))
+        self.vs_note.bind("<Configure>", lambda e: self.vs_note.config(wraplength=e.width))
+        tabs.add(vs, text="EA vs Named User")
 
         sc = ttk.Frame(tabs, padding=8)
         self.scen = self._table(sc, ("kw", "ca", "access", "monthly", "term", "delta"),
@@ -283,6 +318,7 @@ class App(ttk.Frame):
         tree.tag_configure("key", font=(F, 10, "bold"), foreground=C["navy"])
         tree.tag_configure("section", font=(F, 10, "bold"))
         tree.tag_configure("up", foreground=C["orange"])
+        tree.tag_configure("down", foreground=C["good"])
         bar = ttk.Scrollbar(box, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=bar.set)
         tree.pack(side="left", fill="both", expand=True)
@@ -382,9 +418,60 @@ class App(ttk.Frame):
                                                 ("section",))])
             self._rows(self.tree, [(f"{lic} ({qty:,})", (f"{sized:,}",), ()) for lic, qty, sized, _ in r.lines],
                        parent)
+        self.nu = calculate_nu(r, s)
+        self.fill_versus(r, self.nu, s)
         self.fill_scenarios(quantities, s)
         self.fill_whatif(s)
         self.draw_chart()
+
+    def fill_versus(self, r, nu, s):
+        term = max(1, s["term_months"])
+        winner, saving, pct = compare(r, nu)
+        if not any(q for _, q, _, how in r.lines if how in NU_TIER):
+            text, fg, bg = "Enter licence quantities to compare Enterprise Agreement with Named User.", \
+                C["navy"], C["accent_soft"]
+        elif nu.missing_price:
+            text, fg, bg = (f"⚠  Enter the NU Professional price ({', '.join(nu.missing_price)}) on the Pricing tab "
+                            f"to compare EA with Named User.", C["warn"], C["warn_soft"])
+        elif winner == "Same":
+            text, fg, bg = f"EA and Named User cost the same over {term} months.", C["navy"], C["accent_soft"]
+        else:
+            name = "Enterprise Agreement" if winner == "EA" else "Named User"
+            text, fg, bg = (f"✔  {name} is cheaper — saves {money(saving)} over {term} months ({pct:.1f}%).  "
+                            f"EA {money(r.term_total)}  vs  NU {money(nu.term_total)}", C["good"], C["good_soft"])
+        self.verdict.config(text=text, fg=fg, bg=bg)
+
+        def diff(a, b, is_money=True):
+            d = b - a
+            fmt = money(d) if is_money else f"{d:,}"
+            return ("+" if d > 0 else "") + fmt, ("up",) if d > 0 else ("down",) if d < 0 else ()
+
+        rows = [
+            ("Professional", (f"{r.ea_licenses:,} EA KW", f"{nu.qty['nu_pro']:,}", ""), ()),
+            ("Enhanced / Common Area",
+             (f"{r.ca_addon:,} add-on · {min(r.ca_devices, r.ca_included):,} free", f"{nu.qty['nu_enh']:,}", ""), ()),
+            ("Access",
+             (f"{r.access_addon:,} add-on · {min(r.access_devices, r.access_included):,} free",
+              f"{nu.qty['nu_access']:,}", ""), ()),
+        ]
+        for label, a, b, key in (("Monthly cost", r.monthly, nu.monthly, False),
+                                 ("Yearly cost", r.monthly * 12, nu.monthly * 12, False),
+                                 (f"{term}-month term cost", r.term_total, nu.term_total, True)):
+            d, tags = diff(a, b)
+            rows.append((label, (money(a), money(b), d), (("key",) if key else ()) + tags))
+        rows += [
+            ("Minimum quantity", (f"{s['min_ea']:,} KW", "None", ""), ()),
+            ("Growth allowance", (f"Up to {r.growth_ceiling:,} KW", "None", ""), ()),
+            ("Free Common Area / Access", (f"{s['ca_pct']:g}% / {s['access_pct']:g}% of KW", "None", ""), ()),
+        ]
+        self.vs.delete(*self.vs.get_children())
+        self._rows(self.vs, rows)
+        self.vs_note.config(text=(
+            "Named User licenses every user and device 1:1 in its own tier "
+            f"({', '.join(f'{NU_LABEL[t]} {money(nu.unit[t])}' for t in NU_LABEL)}/month) with no minimum. "
+            f"EA needs at least {s['min_ea']:,} KW licences but adds free Common Area and Access devices and a growth "
+            "allowance, so EA tends to win with many knowledge workers and NU with few. Differences are NU minus EA: "
+            "green means NU is cheaper."))
 
     def draw_chart(self):
         r, cv = self.result, self.chart
@@ -438,6 +525,26 @@ class App(ttk.Frame):
                            text=f"{free:,} free · {addon:,} add-on"
                                 + (f" · {other:,} on spare KW" if other > 0 else "")
                                 + (f" · {included - devices:,} unused" if included > devices else ""))
+
+        # EA vs Named User over the whole term.
+        nu = getattr(self, "nu", None)
+        if nu is None:
+            return
+        y += bar_h + self.px(14)
+        cv.create_text(0, y, text="Term cost: EA vs Named User", anchor="nw", font=title, fill=C["ink"])
+        top = max(r.term_total, nu.term_total, 1)
+        for name, value, color in (("Enterprise Agr.", r.term_total, C["navy"]),
+                                   ("Named User", nu.term_total, C["nu"])):
+            y += bar_h + gap
+            cv.create_text(0, y + bar_h / 2, text=name, anchor="w", font=small, fill=C["ink"])
+            x0, x1 = label_w, w - self.px(230)
+            cv.create_rectangle(x0, y, x1, y + bar_h, fill=C["track"], width=0)
+            cv.create_rectangle(x0, y, x0 + (x1 - x0) * value / top, y + bar_h, fill=color, width=0)
+            note = money(value) + (" (no Professional price)" if name == "Named User" and nu.missing_price else "")
+            cv.create_text(x1 + self.px(10), y + bar_h / 2, anchor="w", font=small, fill=C["muted"], text=note)
+        need = y + bar_h + 2
+        if int(cv.cget("height")) != need:
+            cv.config(height=need)
 
     def fill_scenarios(self, quantities, s):
         self.scen.delete(*self.scen.get_children())
@@ -546,6 +653,26 @@ class App(ttk.Frame):
             ws.append([label, round(value, 2)])
             ws.cell(ws.max_row, 2).number_format = "#,##0.00"
         ws.cell(ws.max_row, 1).font = ws.cell(ws.max_row, 2).font = Font(bold=True)
+
+        vs = wb.create_sheet("EA vs Named User")
+        vs.append(["", "Enterprise Agreement", "Named User", "NU - EA"])
+        for c in vs[1]:
+            c.font, c.fill = head, fill
+        for item in self.vs.get_children():
+            vs.append([self.vs.item(item, "text")] + list(self.vs.item(item, "values")))
+        vs.append([])
+        vs.append(["NU SKU", "Qty", "Unit / month", "Monthly"])
+        for c in vs[vs.max_row]:
+            c.font = Font(bold=True)
+        nu = calculate_nu(r, s)
+        for tier in NU_TIER.values():
+            vs.append([SKUS[tier], nu.qty[tier], round(nu.unit[tier], 2), round(nu.cost[tier], 2)])
+        vs.append([])
+        vs.append([self.verdict.cget("text").lstrip("✔⚠ ")])
+        vs.cell(vs.max_row, 1).font = Font(bold=True)
+        vs.column_dimensions["A"].width = 38
+        for col in "BCD":
+            vs.column_dimensions[col].width = 26
 
         sc = wb.create_sheet("More KW vs add-ons")
         sc.append(["Option", "EA KW", "CA add-on", "Access add-on", "Monthly", "Term total", "vs recommended"])
