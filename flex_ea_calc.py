@@ -460,5 +460,6 @@ def summary_text(r, settings):
     else:
         out.append(f"  CHEAPER: {'Enterprise Agreement' if winner == 'EA' else 'Named User'} "
                    f"saves {saving:,.2f} over {term} months ({pct:.1f}%)")
-    out += ["", f"Source: Cisco Collaboration Flex Plan 3.0 data sheet - {DATA_SHEET_URL}"]
+    out += ["", f"Source: Cisco Collaboration Flex Plan 3.0 data sheet - {DATA_SHEET_URL}",
+            "FlexSizer - (c) 2026 Nithin Eluvathingal - MIT License"]
     return "\n".join(out)
